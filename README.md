@@ -320,6 +320,23 @@ customPlugins = [
 
 Then run `home-manager switch` to install.
 
+For an OpenClaw native plugin published to npm, keep the source shape close to
+OpenClaw's own install command and let Nix build the immutable plugin root:
+
+```nix
+customPlugins = [
+  {
+    source = "npm:@scope/openclaw-plugin@1.2.3";
+    id = "openclaw-plugin";
+    hash = lib.fakeHash; # replace with the sha256 Nix reports
+  }
+];
+```
+
+Use this for OpenClaw runtime plugins with `openclaw.plugin.json` /
+`package.json.openclaw`. It does not run npm at gateway startup; Nix builds and
+caches the plugin root, then adds it to OpenClaw's `plugins.load.paths`.
+
 ### Plugins with configuration
 
 Some plugins need settings (auth files, preferences). Here's a simplified example:

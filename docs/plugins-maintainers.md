@@ -73,7 +73,25 @@ programs.openclaw.customPlugins = [
 
 Do not add raw npm package names to host config for the batteries-included path. Curated plugins packaged by this repo or `nix-openclaw-tools` should be exposed through package/check outputs so Garnix caches them.
 
-Arbitrary user plugins are a separate product surface. A future config like `plugins = [ "scope/plugin@npm:1.2.3" ]` must resolve through a lock/hash-backed npm/ClawHub builder that produces a normal Nix store path. That means our Garnix does not promise to cache every user plugin, but the user's machine also does not rebuild it on every run: Nix reuses the local store or configured binary cache until the spec, lock, or hash changes. OpenClaw must not reinstall it on every gateway start.
+OpenClaw native npm plugins use the same host list with an OpenClaw-style source:
+
+```nix
+programs.openclaw.customPlugins = [
+  {
+    source = "npm:@scope/openclaw-plugin@1.2.3";
+    id = "openclaw-plugin";
+    hash = lib.fakeHash; # replace with the sha256 Nix reports
+  }
+];
+```
+
+- `source`: currently supports registry npm specs with an explicit `npm:` prefix.
+- `id`: required because the Home Manager module must enable the plugin at eval time without importing the built JavaScript package.
+- `hash`: recursive output hash for the immutable plugin root; leave as `lib.fakeHash` to have Nix report the expected hash, then commit that value.
+- Runtime plugin config belongs in `programs.openclaw.config.plugins.entries.<id>.config`, not in `customPlugins.config`.
+- The module adds the built root to `plugins.load.paths` and writes a default `plugins.entries.<id>.enabled` value. OpenClaw owns runtime loading after that.
+
+Curated npm plugins can be added to this repo or `nix-openclaw-tools` so Garnix caches them. Arbitrary user npm specs are still deterministic Nix artifacts, but this repo's cache cannot cover every user's private plugin choice. The user's local store or configured binary cache reuses the artifact until the source or hash changes. OpenClaw must not reinstall it on every gateway start.
 
 ## Dev workflow (fast iteration)
 - Worktree: build and test plugins outside the core repo; point OpenClaw at a local path source during impure local dev (e.g., `source = "path:/Users/you/code/my-plugin"`). Committed config uses pinned refs.

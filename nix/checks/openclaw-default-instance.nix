@@ -319,6 +319,37 @@ let
           throw "User config could not override OpenClaw plugin enabled=false default."
       );
 
+  npmRuntimePluginEval = moduleEval {
+    customPlugins = [
+      {
+        source = "npm:@tencent-weixin/openclaw-weixin@2.4.2";
+        id = "openclaw-weixin";
+        hash = lib.fakeHash;
+      }
+    ];
+  };
+  npmRuntimePluginConfig = builtins.fromJSON (
+    builtins.unsafeDiscardStringContext
+      npmRuntimePluginEval.config.home.file.".openclaw/openclaw.json".text
+  );
+  npmRuntimePluginLoadPaths = ((npmRuntimePluginConfig.plugins or { }).load or { }).paths or [ ];
+  npmRuntimePluginEntry =
+    ((npmRuntimePluginConfig.plugins or { }).entries or { }).openclaw-weixin or { };
+  npmRuntimePluginCheck =
+    builtins.deepSeq (requireNoAssertionFailures "npm OpenClaw runtime plugin" npmRuntimePluginEval)
+      (
+        if
+          !(lib.any (
+            path: lib.hasInfix "openclaw-runtime-plugin-openclaw-weixin" path
+          ) npmRuntimePluginLoadPaths)
+        then
+          throw "npm OpenClaw runtime plugin root was not added to plugins.load.paths."
+        else if (npmRuntimePluginEntry.enabled or false) != true then
+          throw "npm OpenClaw runtime plugin entry default was not enabled."
+        else
+          "ok"
+      );
+
   checkKey = builtins.deepSeq [
     defaultCheck
     customPluginCheck
@@ -330,6 +361,7 @@ let
     openclawPluginCheck
     openclawPluginOverrideCheck
     openclawPluginEnableOverrideCheck
+    npmRuntimePluginCheck
   ] "ok";
 
 in

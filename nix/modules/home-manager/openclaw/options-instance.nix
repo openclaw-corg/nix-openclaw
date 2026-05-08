@@ -1,4 +1,8 @@
-{ lib, openclawLib }:
+{
+  lib,
+  openclawLib,
+  pluginOptionType,
+}:
 
 { name, config, ... }:
 {
@@ -78,21 +82,7 @@
     };
 
     plugins = lib.mkOption {
-      type = lib.types.listOf (
-        lib.types.submodule {
-          options = {
-            source = lib.mkOption {
-              type = lib.types.str;
-              description = "Plugin flake source pointer (e.g., github:owner/repo or path:/...).";
-            };
-            config = lib.mkOption {
-              type = lib.types.attrs;
-              default = { };
-              description = "Plugin-specific configuration (env/files/etc).";
-            };
-          };
-        }
-      );
+      type = lib.types.listOf pluginOptionType;
       default = openclawLib.effectivePlugins;
       description = "Plugins enabled for this instance (includes bundled plugin toggles).";
     };

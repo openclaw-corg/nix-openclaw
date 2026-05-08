@@ -8,10 +8,75 @@
 let
   resolvePath = openclawLib.resolvePath;
   toRelative = openclawLib.toRelative;
+  mkNpmRuntimePlugin = pkgs.callPackage ../../../lib/npm-runtime-plugin.nix { };
 
-  resolvePlugin =
+  normalizeOpenClawPlugin =
+    pluginSource: name: entry:
+    let
+      id = entry.id or (throw "openclawPlugin ${name}: plugins entry missing id");
+      path = entry.path or (throw "openclawPlugin ${name}: plugins.${id} missing path");
+      enabled =
+        if entry ? enable && !(entry ? enabled) then
+          throw "openclawPlugin ${name}: plugins.${id}.enable is not supported; use enabled"
+        else if entry ? enabled then
+          if builtins.isBool entry.enabled then
+            entry.enabled
+          else
+            throw "openclawPlugin ${name}: plugins.${id}.enabled must be a boolean"
+        else
+          true;
+    in
+    {
+      inherit id path enabled;
+      source = pluginSource;
+      plugin = name;
+    };
+
+  resolveNpmRuntimePlugin =
     plugin:
     let
+      id = plugin.id or (throw "OpenClaw npm runtime plugin ${plugin.source} requires id");
+      path = mkNpmRuntimePlugin {
+        inherit id;
+        source = plugin.source;
+        hash = plugin.hash or lib.fakeHash;
+      };
+    in
+    if (plugin.config or { }) != { } then
+      throw "OpenClaw npm runtime plugin ${plugin.source} must put runtime config under programs.openclaw.config.plugins.entries.${id}.config, not customPlugins.config"
+    else
+      {
+        source = plugin.source;
+        name = id;
+        skills = [ ];
+        packages = [ ];
+        plugins = [
+          {
+            inherit id path;
+            enabled = plugin.enabled or true;
+            source = plugin.source;
+            plugin = id;
+          }
+        ];
+        needs = {
+          stateDirs = [ ];
+          requiredEnv = [ ];
+        };
+        config = { };
+      };
+
+  resolveFlakePlugin =
+    plugin:
+    let
+      _ =
+        if (plugin.id or null) != null then
+          throw "Plugin ${plugin.source}: id is only valid for npm: OpenClaw runtime plugin sources"
+        else if (plugin.hash or lib.fakeHash) != lib.fakeHash then
+          throw "Plugin ${plugin.source}: hash is only valid for npm: OpenClaw runtime plugin sources"
+        else if (plugin.enabled or true) != true then
+          throw "Plugin ${plugin.source}: enabled is only valid for npm: OpenClaw runtime plugin sources"
+        else
+          null;
       system = pkgs.stdenv.hostPlatform.system;
       flake = builtins.getFlake plugin.source;
       openclawPluginRaw =
@@ -28,40 +93,26 @@ let
           openclawPlugin;
       name = resolvedPlugin.name or (throw "openclawPlugin.name missing in ${plugin.source}");
       needs = resolvedPlugin.needs or { };
-      normalizeOpenClawPlugin =
-        entry:
-        let
-          id = entry.id or (throw "openclawPlugin ${name}: plugins entry missing id");
-          path = entry.path or (throw "openclawPlugin ${name}: plugins.${id} missing path");
-          enabled =
-            if entry ? enable && !(entry ? enabled) then
-              throw "openclawPlugin ${name}: plugins.${id}.enable is not supported; use enabled"
-            else if entry ? enabled then
-              if builtins.isBool entry.enabled then
-                entry.enabled
-              else
-                throw "openclawPlugin ${name}: plugins.${id}.enabled must be a boolean"
-            else
-              true;
-        in
-        {
-          inherit id path enabled;
-          source = plugin.source;
-          plugin = name;
-        };
     in
-    {
+    builtins.seq _ {
       source = plugin.source;
       inherit name;
       skills = resolvedPlugin.skills or [ ];
       packages = resolvedPlugin.packages or [ ];
-      plugins = map normalizeOpenClawPlugin (resolvedPlugin.plugins or [ ]);
+      plugins = map (normalizeOpenClawPlugin plugin.source name) (resolvedPlugin.plugins or [ ]);
       needs = {
         stateDirs = needs.stateDirs or [ ];
         requiredEnv = needs.requiredEnv or [ ];
       };
       config = plugin.config or { };
     };
+
+  resolvePlugin =
+    plugin:
+    if lib.hasPrefix "npm:" plugin.source then
+      resolveNpmRuntimePlugin plugin
+    else
+      resolveFlakePlugin plugin;
 
   resolvedPluginsByInstance = lib.mapAttrs (
     instName: inst:

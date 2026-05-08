@@ -49,7 +49,7 @@ Source: https://github.com/orgs/openclaw/people
 - Never add internal ExecPlans or agent scratch history to this repo. `.agent/` is ignored for this reason.
 - If a private deployment exposes a public packaging bug, fix the public package here and keep deployment-specific repair elsewhere.
 - OpenClaw plugin loading belongs here: package curated runtime plugin roots as Nix artifacts, expose curated outputs through package/check outputs for Garnix, and let host repos only enable/configure them.
-- Do not make host config run npm/ClawHub installs at runtime for the batteries-included path. Arbitrary plugin specs need a lock/hash-backed Nix derivation so Nix caches them locally or in the user's configured cache.
+- Do not make host config run npm/ClawHub installs at runtime for the batteries-included path. `customPlugins.source = "npm:..."` is allowed only when nix-openclaw turns it into an immutable, hash-backed store path and wires it through OpenClaw's normal `plugins.load.paths`.
 
 ## Packaging Defaults
 

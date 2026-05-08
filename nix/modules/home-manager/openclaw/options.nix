@@ -7,7 +7,35 @@
 
 let
   openclawLib = import ./lib.nix { inherit config lib pkgs; };
-  instanceModule = import ./options-instance.nix { inherit lib openclawLib; };
+  pluginOptionType = lib.types.submodule {
+    options = {
+      source = lib.mkOption {
+        type = lib.types.str;
+        description = "Plugin source. Use a plugin flake source (github:/path:) or an OpenClaw npm install source (npm:@scope/package@version).";
+      };
+      config = lib.mkOption {
+        type = lib.types.attrs;
+        default = { };
+        description = "Nix capability plugin configuration (env/files/etc). Runtime OpenClaw plugin config belongs under programs.openclaw.config.plugins.entries.<id>.config.";
+      };
+      id = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "OpenClaw runtime plugin id. Required for npm: sources so Nix can enable the plugin without build-time introspection.";
+      };
+      enabled = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Default enabled state for an OpenClaw runtime plugin entry.";
+      };
+      hash = lib.mkOption {
+        type = lib.types.str;
+        default = lib.fakeHash;
+        description = "Recursive output hash for npm: runtime plugin sources. Use the hash Nix reports when this is left as lib.fakeHash.";
+      };
+    };
+  };
+  instanceModule = import ./options-instance.nix { inherit lib openclawLib pluginOptionType; };
   pluginCatalog = import ./plugin-catalog.nix;
   mkSkillOption = lib.types.submodule {
     options = {
@@ -132,23 +160,9 @@ in
     };
 
     customPlugins = lib.mkOption {
-      type = lib.types.listOf (
-        lib.types.submodule {
-          options = {
-            source = lib.mkOption {
-              type = lib.types.str;
-              description = "Plugin flake source pointer (e.g., github:owner/repo or path:/...).";
-            };
-            config = lib.mkOption {
-              type = lib.types.attrs;
-              default = { };
-              description = "Plugin-specific configuration (env/files/etc).";
-            };
-          };
-        }
-      );
+      type = lib.types.listOf pluginOptionType;
       default = [ ];
-      description = "Custom/community plugins (merged with bundled plugin toggles).";
+      description = "Custom/community plugins (merged with bundled plugin toggles). Flake sources provide Nix capability plugins; npm: sources provide OpenClaw runtime plugins.";
     };
 
     bundledPlugins = lib.mapAttrs (name: plugin: {
