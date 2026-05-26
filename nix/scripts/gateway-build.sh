@@ -43,7 +43,7 @@ export NPM_CONFIG_STORE_DIR="$store_path"
 export NPM_CONFIG_STORE_PATH="$store_path"
 export HOME="$(mktemp -d)"
 
-log_step "pnpm install (offline, frozen, ignore-scripts)" pnpm install --offline --frozen-lockfile --ignore-scripts --store-dir "$store_path"
+log_step "pnpm install (offline, frozen, ignore-scripts)" env CI=true pnpm install --offline --frozen-lockfile --ignore-scripts --store-dir "$store_path"
 
 log_step "chmod node_modules writable" chmod -R u+w node_modules
 

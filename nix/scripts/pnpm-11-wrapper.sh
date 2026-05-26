@@ -9,4 +9,6 @@ case "$0" in
     ;;
 esac
 
+export PNPM_CONFIG_PM_ON_FAIL="${PNPM_CONFIG_PM_ON_FAIL:-ignore}"
+
 exec @node@ @entrypoint@ "$@"

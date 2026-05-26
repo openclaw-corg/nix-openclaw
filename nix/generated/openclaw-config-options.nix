@@ -1,4 +1,4 @@
-# Generated from upstream OpenClaw schema at rev e510042870cf248c0e0461b6f8d427326266141d. DO NOT EDIT.
+# Generated from upstream OpenClaw schema at rev a374c3a5bfd5225ce319bce3865aab6216309c4f. DO NOT EDIT.
 # Generator: nix/scripts/generate-config-options.ts
 { lib }:
 let
@@ -8009,6 +8009,10 @@ in
       type = t.nullOr (t.submodule { options = {
       brain = lib.mkOption {
         type = t.nullOr (t.enum [ "agent-consult" "direct-tools" "none" ]);
+        default = null;
+      };
+      consultRouting = lib.mkOption {
+        type = t.nullOr (t.enum [ "provider-direct" "force-agent-consult" ]);
         default = null;
       };
       instructions = lib.mkOption {

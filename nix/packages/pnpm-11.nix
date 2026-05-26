@@ -7,11 +7,11 @@
 
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "pnpm";
-  version = "11.1.0";
+  version = "11.2.2";
 
   src = fetchurl {
     url = "https://registry.npmjs.org/pnpm/-/pnpm-${finalAttrs.version}.tgz";
-    hash = "sha256-VzyCrTVuiwl+bKxIG3OB+d7tM6MYr38xGYSFjr4fl+8=";
+    hash = "sha256-mcS+gx7SMYKYlRQtlnk9vnWvxTeVkzrtg2bmjczh4bg=";
   };
 
   preConfigure = ''
@@ -36,6 +36,23 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     chmod +x $out/bin/pnpm $out/bin/pnpx
 
     runHook postInstall
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+
+    tmp="$(mktemp -d)"
+    mkdir -p "$tmp/home" "$tmp/project"
+    printf '{"packageManager":"pnpm@11.99.99"}\n' > "$tmp/project/package.json"
+    (
+      cd "$tmp/project"
+      version="$(HOME="$tmp/home" $out/bin/pnpm --version)"
+      test "$version" = "${finalAttrs.version}"
+    )
+    rm -rf "$tmp"
+
+    runHook postInstallCheck
   '';
 
   passthru.majorVersion = lib.versions.major finalAttrs.version;
