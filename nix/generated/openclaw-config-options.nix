@@ -1,4 +1,4 @@
-# Generated from upstream OpenClaw schema at rev a374c3a5bfd5225ce319bce3865aab6216309c4f. DO NOT EDIT.
+# Generated from upstream OpenClaw schema at rev 10ad3aa16068baa84a1bd9ac4f7d42ae725cedb7. DO NOT EDIT.
 # Generator: nix/scripts/generate-config-options.ts
 { lib }:
 let
@@ -786,6 +786,10 @@ in
       }; }) ]);
         default = null;
       };
+      imageQuality = lib.mkOption {
+        type = t.nullOr (t.enum [ "auto" "efficient" "balanced" "high" ]);
+        default = null;
+      };
       maxConcurrent = lib.mkOption {
         type = t.nullOr (t.int);
         default = null;
@@ -1404,7 +1408,7 @@ in
             default = null;
           };
           setupCommand = lib.mkOption {
-            type = t.nullOr (t.anything);
+            type = t.nullOr (t.str);
             default = null;
           };
           tmpfs = lib.mkOption {
@@ -2546,7 +2550,7 @@ in
             default = null;
           };
           setupCommand = lib.mkOption {
-            type = t.nullOr (t.anything);
+            type = t.nullOr (t.str);
             default = null;
           };
           tmpfs = lib.mkOption {
@@ -4155,6 +4159,10 @@ in
           default = null;
         };
         systemPrompt = lib.mkOption {
+          type = t.nullOr (t.bool);
+          default = null;
+        };
+        toolDefinitions = lib.mkOption {
           type = t.nullOr (t.bool);
           default = null;
         };
@@ -5921,7 +5929,7 @@ in
   meta = lib.mkOption {
     type = t.nullOr (t.submodule { options = {
     lastTouchedAt = lib.mkOption {
-      type = t.nullOr (t.oneOf [ (t.str) (t.anything) ]);
+      type = t.nullOr (t.str);
       default = null;
     };
     lastTouchedVersion = lib.mkOption {
@@ -5959,7 +5967,7 @@ in
         default = null;
       };
       api = lib.mkOption {
-        type = t.nullOr (t.enum [ "openai-completions" "openai-responses" "openai-codex-responses" "anthropic-messages" "google-generative-ai" "github-copilot" "bedrock-converse-stream" "ollama" "azure-openai-responses" ]);
+        type = t.nullOr (t.enum [ "openai-completions" "openai-responses" "openai-codex-responses" "anthropic-messages" "google-generative-ai" "google-vertex" "github-copilot" "bedrock-converse-stream" "ollama" "azure-openai-responses" ]);
         default = null;
       };
       apiKey = lib.mkOption {
@@ -6062,7 +6070,7 @@ in
           default = null;
         };
         api = lib.mkOption {
-          type = t.nullOr (t.enum [ "openai-completions" "openai-responses" "openai-codex-responses" "anthropic-messages" "google-generative-ai" "github-copilot" "bedrock-converse-stream" "ollama" "azure-openai-responses" ]);
+          type = t.nullOr (t.enum [ "openai-completions" "openai-responses" "openai-codex-responses" "anthropic-messages" "google-generative-ai" "google-vertex" "github-copilot" "bedrock-converse-stream" "ollama" "azure-openai-responses" ]);
           default = null;
         };
         baseUrl = lib.mkOption {
@@ -6228,6 +6236,36 @@ in
         };
         maxTokens = lib.mkOption {
           type = t.nullOr (t.number);
+          default = null;
+        };
+        mediaInput = lib.mkOption {
+          type = t.nullOr (t.submodule { options = {
+          image = lib.mkOption {
+            type = t.nullOr (t.submodule { options = {
+            maxBytes = lib.mkOption {
+              type = t.nullOr (t.int);
+              default = null;
+            };
+            maxPixels = lib.mkOption {
+              type = t.nullOr (t.int);
+              default = null;
+            };
+            maxSidePx = lib.mkOption {
+              type = t.nullOr (t.int);
+              default = null;
+            };
+            preferredSidePx = lib.mkOption {
+              type = t.nullOr (t.int);
+              default = null;
+            };
+            tokenMode = lib.mkOption {
+              type = t.nullOr (t.oneOf [ (t.enum [ "tile" ]) (t.enum [ "detail" ]) (t.enum [ "provider" ]) ]);
+              default = null;
+            };
+          }; });
+            default = null;
+          };
+        }; });
           default = null;
         };
         metadataSource = lib.mkOption {
@@ -10852,6 +10890,52 @@ in
         default = null;
       };
     }; });
+      default = null;
+    };
+  }; });
+    default = null;
+  };
+
+  transcripts = lib.mkOption {
+    type = t.nullOr (t.submodule { options = {
+    autoStart = lib.mkOption {
+      type = t.nullOr (t.listOf (t.submodule { options = {
+      accountId = lib.mkOption {
+        type = t.nullOr (t.str);
+        default = null;
+      };
+      channelId = lib.mkOption {
+        type = t.nullOr (t.str);
+        default = null;
+      };
+      guildId = lib.mkOption {
+        type = t.nullOr (t.str);
+        default = null;
+      };
+      meetingUrl = lib.mkOption {
+        type = t.nullOr (t.str);
+        default = null;
+      };
+      providerId = lib.mkOption {
+        type = t.str;
+      };
+      sessionId = lib.mkOption {
+        type = t.nullOr (t.str);
+        default = null;
+      };
+      title = lib.mkOption {
+        type = t.nullOr (t.str);
+        default = null;
+      };
+    }; }));
+      default = null;
+    };
+    enabled = lib.mkOption {
+      type = t.nullOr (t.bool);
+      default = null;
+    };
+    maxUtterances = lib.mkOption {
+      type = t.nullOr (t.int);
       default = null;
     };
   }; });
