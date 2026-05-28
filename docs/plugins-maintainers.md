@@ -13,7 +13,7 @@ nix-openclaw plugins are the tool/skill/env bundles described below. They do not
 
 OpenClaw plugins are runtime plugin directories with `openclaw.plugin.json` plus built JavaScript loaded by the gateway. They include bundled upstream plugins, official external plugins from OpenClaw's catalog or ClawHub, third-party npm plugins, and channel plugins such as Weixin or WhatsApp. nix-openclaw does not support these yet.
 
-Current nix-openclaw `customPlugins` supports nix-openclaw plugins: package binaries on the gateway PATH, materialize skills, create state dirs, validate env files, and render optional tool settings.
+Current nix-openclaw `customPlugins` supports nix-openclaw plugins: package binaries on the gateway PATH, add skills through OpenClaw skill load paths, create state dirs, validate env files, and render optional tool settings.
 
 PR #81 (`fix: copy plugin manifests into dist/extensions`) was related but not the missing external-plugin feature. It fixed bundled upstream plugin manifests missing from the packaged gateway `dist/extensions/*/openclaw.plugin.json` tree. Current packaging already copies those manifests and checks them in `openclaw-package-contents`.
 
@@ -40,7 +40,7 @@ Host responsibilities (what the runtime guarantees):
 - Install `packages`; prepend to PATH for the gateway wrapper.
 - Create `needs.stateDirs` under `$HOME`.
 - Fail fast if any `requiredEnv` is unset or points to a missing/empty file.
-- Copy/symlink each `skills` entry into `workspace/skills/<skill-dir-basename>/...`.
+- Add each `skills` entry to generated `skills.load.extraDirs` for the instance.
 - If host config provides `config.settings`, render it to `config.json` in the first `stateDir`.
 - Export `config.env` (plus required envs) into the gateway wrapper.
 - Add declared OpenClaw plugin roots to `plugins.load.paths`, and set `plugins.entries.<id>.enabled` from the plugin contract as a default. This is implementation plumbing, not supported OpenClaw plugin installation.
@@ -71,7 +71,7 @@ Do not add raw npm package names to host config or documentation yet. The implem
 - Worktree: build and test plugins outside the core repo; point OpenClaw at a local path source during impure local dev (e.g., `source = "path:/Users/you/code/my-plugin"`). Committed config uses pinned refs.
 - Rebuild loop: change plugin → `home-manager switch` (or host-equivalent) → gateway restarts with new PATH/skills/config; no manual copying.
 - Name collisions: use the same plugin `name` to override a pinned version (last entry wins); keep unique names otherwise to avoid surprise overrides.
-- Skills placement: skills land under `~/.openclaw*/workspace/skills/<skill-dir-basename>/...` so you can inspect quickly; delete the workspace to fully reset cached skills.
+- Skills placement: skills stay in immutable Nix/plugin paths and are wired through `skills.load.extraDirs`, so every agent workspace in that instance can discover them.
 - Env guardrails: required env vars must point to files (non-empty) or the activation fails—supply temp files during dev to exercise the checks.
 - Settings JSON: inspect the rendered `config.json` in the first `stateDir` to confirm schema and defaults before committing.
 

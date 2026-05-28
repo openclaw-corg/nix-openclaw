@@ -109,6 +109,7 @@
                 openclawGateway = packageSetDogfood.openclaw-gateway;
               };
               default-instance = pkgs.callPackage ./nix/checks/openclaw-default-instance.nix { };
+              workspace-materializer = pkgs.callPackage ./nix/checks/openclaw-workspace-materializer.nix { };
               config-validity = pkgs.callPackage ./nix/checks/openclaw-config-validity.nix {
                 openclawGateway = packageSetStable.openclaw-gateway;
               };

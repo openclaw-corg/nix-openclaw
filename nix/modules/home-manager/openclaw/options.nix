@@ -70,12 +70,12 @@ let
           "inline"
         ];
         default = "symlink";
-        description = "Install mode for the skill (symlink/copy/inline).";
+        description = "Skill source mode. inline renders body; symlink/copy import source as a Nix store skill directory and expose it through skills.load.extraDirs.";
       };
       source = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Source path for the skill (required for symlink/copy).";
+        description = "Source directory for symlink/copy skill modes. The directory must contain SKILL.md.";
       };
     };
   };
@@ -156,7 +156,7 @@ in
     skills = lib.mkOption {
       type = lib.types.listOf mkSkillOption;
       default = [ ];
-      description = "Declarative skills installed into each instance workspace.";
+      description = "Declarative skills added to each instance's OpenClaw skill load paths.";
     };
 
     customPlugins = lib.mkOption {

@@ -262,9 +262,9 @@ When you run `home-manager switch`:
 1. Nix reads your `flake.nix` and resolves all plugin sources (GitHub repos, local paths)
 2. For each nix-openclaw plugin, Nix looks for a `openclawPlugin` output that declares:
    - What CLI packages to install
-   - What skill files to copy
+   - What skill directories to expose
    - What environment variables it needs
-3. Tools go on your PATH, skills get symlinked to `~/.openclaw/workspace/skills/`
+3. Tools go on the gateway PATH, skills are added to OpenClaw's `skills.load.extraDirs`
 4. A launchd (macOS) or systemd user service (Linux) is created/updated to run the gateway
 5. The gateway starts, loads skills, connects to your providers
 

@@ -9,7 +9,6 @@
 let
   cfg = openclawLib.cfg;
   resolvePath = openclawLib.resolvePath;
-  toRelative = openclawLib.toRelative;
   toolSets = openclawLib.toolSets;
   documentsEnabled = cfg.documents != null;
   instanceWorkspaceDirs = map (inst: resolvePath inst.workspaceDir) (lib.attrValues enabledInstances);
@@ -38,17 +37,24 @@ let
       targetsForInstance =
         instName: inst:
         let
-          base = "${toRelative (resolvePath inst.workspaceDir)}/skills";
-          userTargets = map (skill: "${base}/${skill.name}") cfg.skills;
+          userTargets = map (skill: skill.name) cfg.skills;
           pluginsForInstance = plugins.resolvedPluginsByInstance.${instName} or [ ];
-          pluginTargets = lib.flatten (
-            map (p: map (skillPath: "${base}/${builtins.baseNameOf skillPath}") p.skills) pluginsForInstance
-          );
+          pluginTargets = lib.flatten (map (p: map builtins.baseNameOf p.skills) pluginsForInstance);
         in
-        userTargets ++ pluginTargets;
-      skillTargets = lib.flatten (lib.mapAttrsToList targetsForInstance enabledInstances);
-      counts = lib.foldl' (acc: path: acc // { "${path}" = (acc.${path} or 0) + 1; }) { } skillTargets;
+        map (name: "${instName}:${name}") (userTargets ++ pluginTargets);
+      skillTargetsByInstance = lib.flatten (lib.mapAttrsToList targetsForInstance enabledInstances);
+      counts = lib.foldl' (
+        acc: path: acc // { "${path}" = (acc.${path} or 0) + 1; }
+      ) { } skillTargetsByInstance;
       duplicates = lib.attrNames (lib.filterAttrs (_: v: v > 1) counts);
+      renderDuplicate =
+        duplicate:
+        let
+          parts = lib.splitString ":" duplicate;
+          instName = lib.elemAt parts 0;
+          skillName = lib.concatStringsSep ":" (lib.drop 1 parts);
+        in
+        "programs.openclaw.instances.${instName}: ${skillName}";
     in
     if duplicates == [ ] then
       [ ]
@@ -56,47 +62,37 @@ let
       [
         {
           assertion = false;
-          message = "Duplicate skill paths detected: ${lib.concatStringsSep ", " duplicates}";
+          message = "Duplicate Nix-managed skill names detected: ${lib.concatStringsSep ", " (map renderDuplicate duplicates)}";
         }
       ];
 
-  skillEntries =
+  skillLoadDirsByInstance =
     let
-      entriesForInstance =
+      dirsForInstance =
         instName: inst:
         let
-          entryFor =
+          dirFor =
             skill:
             let
               mode = skill.mode or "symlink";
               source = if skill ? source && skill.source != null then resolvePath skill.source else null;
             in
             if mode == "inline" then
-              {
-                source = pkgs.writeText "openclaw-skill-${skill.name}.md" (renderSkill skill);
-                target = "${resolvePath inst.workspaceDir}/skills/${skill.name}/SKILL.md";
-              }
+              pkgs.writeTextDir "${skill.name}/SKILL.md" (renderSkill skill)
             else if mode == "copy" || mode == "symlink" then
-              {
-                source = builtins.path {
-                  name = "openclaw-skill-${skill.name}";
-                  path = source;
-                };
-                target = "${resolvePath inst.workspaceDir}/skills/${skill.name}";
+              builtins.path {
+                name = "openclaw-skill-${skill.name}";
+                path = source;
               }
             else
               throw "Unsupported OpenClaw skill mode: ${mode}";
-          pluginEntriesFor =
-            p:
-            map (skillPath: {
-              source = skillPath;
-              target = "${resolvePath inst.workspaceDir}/skills/${builtins.baseNameOf skillPath}";
-            }) p.skills;
           pluginsForInstance = plugins.resolvedPluginsByInstance.${instName} or [ ];
         in
-        (map entryFor cfg.skills) ++ (lib.flatten (map pluginEntriesFor pluginsForInstance));
+        map toString ((map dirFor cfg.skills) ++ (lib.flatten (map (p: p.skills) pluginsForInstance)));
     in
-    lib.flatten (lib.mapAttrsToList entriesForInstance enabledInstances);
+    lib.mapAttrs dirsForInstance enabledInstances;
+
+  skillLoadDirsForInstance = instName: skillLoadDirsByInstance.${instName} or [ ];
 
   documentsRequiredFiles = [
     "AGENTS.md"
@@ -252,7 +248,7 @@ let
     else
       [ ];
 
-  materializedEntries = documentEntries ++ skillEntries;
+  materializedEntries = documentEntries;
   materializedManifest =
     let
       renderEntry = entry: "${entry.source}\t${entry.target}";
@@ -269,5 +265,6 @@ in
     materializedManifest
     materializedEntries
     duplicateSkillAssertion
+    skillLoadDirsForInstance
     ;
 }

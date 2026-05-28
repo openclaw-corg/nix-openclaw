@@ -169,15 +169,54 @@ let
       { source = alphaPluginSource; }
     ];
   };
-  customPluginSkill = ".openclaw/workspace/skills/skill";
-  customPluginActivation = builtins.toJSON customPluginEval.config.home.activation.openclawWorkspaceFiles;
-  hasCustomPluginMaterializer = lib.hasInfix "openclaw-materialize-workspace-files" customPluginActivation;
-  customPluginCheck = builtins.deepSeq (requireNoAssertionFailures "customPlugins" customPluginEval) (
-    if hasCustomPluginMaterializer then
-      "ok"
-    else
-      throw "customPlugins did not wire workspace file materialization."
+  customPluginConfig = builtins.fromJSON (
+    builtins.unsafeDiscardStringContext customPluginEval.config.home.file.".openclaw/openclaw.json".text
   );
+  customPluginSkillExtraDirs = ((customPluginConfig.skills or { }).load or { }).extraDirs or [ ];
+  customPluginCheck = builtins.deepSeq (requireNoAssertionFailures "customPlugins" customPluginEval) (
+    if !(lib.any (path: lib.hasSuffix "/skill" path) customPluginSkillExtraDirs) then
+      throw "customPlugins did not wire plugin skills into skills.load.extraDirs."
+    else
+      "ok"
+  );
+
+  multiAgentPluginSkillEval = moduleEval {
+    customPlugins = [
+      { source = alphaPluginSource; }
+    ];
+    config.agents.list = [
+      {
+        id = "writer";
+        workspace = "/tmp/openclaw-writer-workspace";
+      }
+      {
+        id = "research";
+        workspace = "/tmp/openclaw-research-workspace";
+      }
+    ];
+  };
+  multiAgentPluginSkillConfig = builtins.fromJSON (
+    builtins.unsafeDiscardStringContext
+      multiAgentPluginSkillEval.config.home.file.".openclaw/openclaw.json".text
+  );
+  multiAgentPluginSkillExtraDirs = (
+    ((multiAgentPluginSkillConfig.skills or { }).load or { }).extraDirs or [ ]
+  );
+  multiAgentWorkspaces = map (agent: agent.workspace) (
+    ((multiAgentPluginSkillConfig.agents or { }).list or [ ])
+  );
+  multiAgentPluginSkillCheck =
+    builtins.deepSeq (requireNoAssertionFailures "multi-agent plugin skills" multiAgentPluginSkillEval)
+      (
+        if !(lib.elem "/tmp/openclaw-writer-workspace" multiAgentWorkspaces) then
+          throw "Multi-agent config lost writer workspace."
+        else if !(lib.elem "/tmp/openclaw-research-workspace" multiAgentWorkspaces) then
+          throw "Multi-agent config lost research workspace."
+        else if !(lib.any (path: lib.hasSuffix "/skill" path) multiAgentPluginSkillExtraDirs) then
+          throw "Custom plugin skill was not shared through skills.load.extraDirs for separate agent workspaces."
+        else
+          "ok"
+      );
 
   duplicateSkillEval = moduleEval {
     customPlugins = [
@@ -187,7 +226,7 @@ let
   };
   duplicateSkillCheck =
     requireAssertionFailure "duplicate plugin skills"
-      "Duplicate skill paths detected: ${customPluginSkill}"
+      "Duplicate Nix-managed skill names detected: programs.openclaw.instances.default: skill"
       duplicateSkillEval;
 
   userPluginSkillCollisionEval = moduleEval {
@@ -203,8 +242,35 @@ let
   };
   userPluginSkillCollisionCheck =
     requireAssertionFailure "user/plugin skill collision"
-      "Duplicate skill paths detected: ${customPluginSkill}"
+      "Duplicate Nix-managed skill names detected: programs.openclaw.instances.default: skill"
       userPluginSkillCollisionEval;
+
+  userSkillEval = moduleEval {
+    config.skills.load.extraDirs = [ "/tmp/user-skill-root" ];
+    skills = [
+      {
+        name = "inline-skill";
+        mode = "inline";
+        description = "Inline test skill";
+        body = "Use this test skill.";
+      }
+    ];
+  };
+  userSkillConfig = builtins.fromJSON (
+    builtins.unsafeDiscardStringContext userSkillEval.config.home.file.".openclaw/openclaw.json".text
+  );
+  userSkillExtraDirs = ((userSkillConfig.skills or { }).load or { }).extraDirs or [ ];
+  generatedUserSkillExtraDirs = lib.filter (path: path != "/tmp/user-skill-root") userSkillExtraDirs;
+  userSkillCheck = builtins.deepSeq (requireNoAssertionFailures "user skills" userSkillEval) (
+    if !(lib.elem "/tmp/user-skill-root" userSkillExtraDirs) then
+      throw "User skills.load.extraDirs entry was not preserved."
+    else if generatedUserSkillExtraDirs == [ ] then
+      throw "Nix-managed raw skill was not added to skills.load.extraDirs."
+    else if userSkillExtraDirs != generatedUserSkillExtraDirs ++ [ "/tmp/user-skill-root" ] then
+      throw "User skills.load.extraDirs entries should remain after Nix-managed skill dirs."
+    else
+      "ok"
+  );
 
   secretProviderEval = moduleEval {
     config.secrets.providers.test-file = {
@@ -460,8 +526,10 @@ let
   checkKey = builtins.deepSeq [
     defaultCheck
     customPluginCheck
+    multiAgentPluginSkillCheck
     duplicateSkillCheck
     userPluginSkillCollisionCheck
+    userSkillCheck
     secretProviderCheck
     secretRefPassthroughCheck
     qmdPrewarmCheck

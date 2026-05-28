@@ -132,23 +132,32 @@ let
       userConfig = stripNulls (lib.recursiveUpdate (stripNulls cfg.config) (stripNulls inst.config));
       pluginEntryConfig = plugins.openclawPluginEntriesConfigFor name;
       openclawPluginLoadPaths = plugins.openclawPluginLoadPathsFor name;
+      nixSkillLoadDirs = files.skillLoadDirsForInstance name;
       mergedConfigWithoutLoadPaths = stripNulls (
         lib.recursiveUpdate (lib.recursiveUpdate baseConfig pluginEntryConfig) userConfig
       );
       existingOpenClawPluginLoadPaths = (
         ((mergedConfigWithoutLoadPaths.plugins or { }).load or { }).paths or [ ]
       );
-      mergedConfig0 =
-        if openclawPluginLoadPaths == [ ] then
-          mergedConfigWithoutLoadPaths
-        else
-          lib.recursiveUpdate mergedConfigWithoutLoadPaths {
-            plugins = {
-              load = {
-                paths = lib.unique (openclawPluginLoadPaths ++ existingOpenClawPluginLoadPaths);
-              };
+      existingSkillLoadDirs = (
+        ((mergedConfigWithoutLoadPaths.skills or { }).load or { }).extraDirs or [ ]
+      );
+      generatedLoadConfig =
+        lib.optionalAttrs (openclawPluginLoadPaths != [ ]) {
+          plugins = {
+            load = {
+              paths = lib.unique (openclawPluginLoadPaths ++ existingOpenClawPluginLoadPaths);
             };
           };
+        }
+        // lib.optionalAttrs (nixSkillLoadDirs != [ ]) {
+          skills = {
+            load = {
+              extraDirs = lib.unique (nixSkillLoadDirs ++ existingSkillLoadDirs);
+            };
+          };
+        };
+      mergedConfig0 = lib.recursiveUpdate mergedConfigWithoutLoadPaths generatedLoadConfig;
       existingWorkspace = (((mergedConfig0.agents or { }).defaults or { }).workspace or null);
       mergedConfig =
         if (cfg.workspace.pinAgentDefaults or true) && existingWorkspace == null then
@@ -406,11 +415,9 @@ in
       }
     '';
 
-    home.activation.openclawWorkspaceFiles = lib.mkIf (files.materializedEntries != [ ]) (
-      lib.hm.dag.entryAfter [ "openclawDirs" ] ''
-        run --quiet ${../openclaw-materialize-workspace-files.sh} ${lib.escapeShellArg "${homeDir}/.local/state/nix-openclaw/managed-workspace-files"} ${files.materializedManifest}
-      ''
-    );
+    home.activation.openclawWorkspaceFiles = lib.hm.dag.entryAfter [ "openclawDirs" ] ''
+      run --quiet ${../openclaw-materialize-workspace-files.sh} ${lib.escapeShellArg "${homeDir}/.local/state/nix-openclaw/managed-workspace-files"} ${files.materializedManifest}
+    '';
 
     home.activation.openclawConfigFiles = lib.hm.dag.entryAfter [ "openclawDirs" ] ''
       ${lib.concatStringsSep "\n" (
