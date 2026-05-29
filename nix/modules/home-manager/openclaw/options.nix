@@ -172,7 +172,7 @@ in
         "slack"
         "discord"
       ];
-      description = "Curated OpenClaw npm runtime plugin ids to package immutably and load through OpenClaw's plugins.load.paths.";
+      description = "Supported OpenClaw catalog runtime plugin ids to package immutably and load through OpenClaw's plugins.load.paths.";
     };
 
     bundledPlugins = lib.mapAttrs (name: plugin: {

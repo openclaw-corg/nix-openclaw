@@ -2,16 +2,26 @@
 {
   id = "discord";
   attrName = "discord";
+  label = "Discord";
+  kind = "channel";
+  catalogSource = "official";
+  catalogFile = "official-external-channel-catalog.json";
+  catalogEntryName = "@openclaw/discord";
+  catalogDefaultChoice = "npm";
+  selectedSource = "npm";
+  npmSpec = "@openclaw/discord";
+  minHostVersion = ">=2026.4.10";
+  expectedIntegrity = "";
   packageName = "@openclaw/discord";
-  version = "2026.5.26";
-  tarballUrl = "https://registry.npmjs.org/@openclaw/discord/-/discord-2026.5.26.tgz";
-  npmIntegrity = "sha512-rifXsn9appr5tMVkJfXKiSHWljUy8P2ZdPbksgGcDyDqaHI5Bj4o+3HfFoMmhPJfpWSLeeW2X7fykmUeL1FWiA==";
-  npmShasum = "26ebc893e6cf5744b3c59e6b4ff08821ab092880";
-  nixHash = "sha256-jVh3nNH4yGMgx1G5pU7lgNbFgsCfn+57p0qmDrDk5F8=";
-  v1aClass = "bundled-dependencies";
+  version = "2026.5.27";
+  tarballUrl = "https://registry.npmjs.org/@openclaw/discord/-/discord-2026.5.27.tgz";
+  npmIntegrity = "sha512-7iDvLnAuu3/aTX5NtP9kGPAm/BiRRz3lf08aIzsNU0qE3rI6eLPOH0z89O2YsRFFRBh+kXlrKjtUM9zTBaUIQg==";
+  npmShasum = "1d51f73baa7e4d6df90ba94f6d8b4ceaa575a516";
+  nixHash = "sha256-YYe9bOCG5qvi/lG8tSDwoOcNMKR+qSBZRECS1Kdtd2k=";
+  dependencyMode = "bundled";
   manifestId = "discord";
-  openclawCompat = ">=2026.5.26";
-  peerOpenClaw = ">=2026.5.26";
+  openclawCompat = ">=2026.5.27";
+  peerOpenClaw = ">=2026.5.27";
   runtimeExtensions = [
     "./dist/index.js"
   ];

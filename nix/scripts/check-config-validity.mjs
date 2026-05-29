@@ -37,6 +37,8 @@ try {
     OPENCLAW_STATE_DIR: path.join(tmpDir, "state"),
     OPENCLAW_LOG_DIR: path.join(tmpDir, "logs"),
     OPENCLAW_NIX_MODE: "1",
+    SLACK_APP_TOKEN: "xapp-openclaw-nix-check",
+    SLACK_BOT_TOKEN: "xoxb-openclaw-nix-check",
     NO_COLOR: "1",
   };
 
@@ -50,6 +52,9 @@ try {
   ]) {
     fs.mkdirSync(env[key], { recursive: true });
   }
+
+  fs.mkdirSync(path.join(env.OPENCLAW_STATE_DIR, "plugins"), { recursive: true });
+  fs.writeFileSync(path.join(env.OPENCLAW_STATE_DIR, "plugins", "installs.json"), "{ stale registry json");
 
   const validate = spawnSync(openclaw, ["config", "validate", "--json"], {
     env,
@@ -138,6 +143,32 @@ try {
   }
   if (slackPlugin.dependencyStatus?.requiredInstalled !== true) {
     console.error(`Slack runtime plugin dependencies were not installed: ${JSON.stringify(slackPlugin)}`);
+    process.exit(1);
+  }
+
+  const status = spawnSync(openclaw, ["status", "--timeout", "1000"], {
+    env,
+    encoding: "utf8",
+  });
+
+  if (status.status !== 0) {
+    if (status.stdout) {
+      process.stdout.write(status.stdout);
+    }
+    if (status.stderr) {
+      process.stderr.write(status.stderr);
+    }
+    console.error(`openclaw status failed with exit code ${status.status ?? "unknown"}`);
+    process.exit(status.status ?? 1);
+  }
+
+  const statusOutput = `${status.stdout}\n${status.stderr}`.toLowerCase();
+  if (!statusOutput.includes("slack")) {
+    console.error(`openclaw status did not include Slack:\n${status.stdout}${status.stderr}`);
+    process.exit(1);
+  }
+  if (statusOutput.includes("plugin not installed") || statusOutput.includes("openclaw plugins install")) {
+    console.error(`openclaw status reported a mutable install hint for Nix-managed Slack:\n${status.stdout}${status.stderr}`);
     process.exit(1);
   }
 

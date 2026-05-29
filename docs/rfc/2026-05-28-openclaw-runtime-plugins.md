@@ -1,69 +1,28 @@
-# RFC: Declarative OpenClaw Runtime Plugins in nix-openclaw
+# RFC 1: OpenClaw Catalog Runtime Plugins in nix-openclaw
 
-- Date: 2026-05-28
+- Date: 2026-05-29
 - Status: Draft
 - Audience: OpenClaw and nix-openclaw maintainers
 
-## Executive Model
-
-OpenClaw runtime plugin support has two separable jobs:
-
-1. prepare a plugin directory that already contains the runtime code and dependencies;
-2. tell OpenClaw to discover, trust, and start that prepared directory.
-
-Mutable OpenClaw does both through `openclaw plugins install`. nix-openclaw should not run that command or forge its receipts. Nix should do job 1 by producing an immutable plugin root in `/nix/store`. nix-openclaw should do job 2 by rendering normal OpenClaw config: `plugins.load.paths`, `plugins.entries.<id>.enabled = true`, and an allowlist merge only when the user already has a restrictive allowlist.
-
-This boundary drives the rest of the RFC.
-
 ## Decision
 
-nix-openclaw will build OpenClaw runtime plugins as immutable Nix store plugin roots and feed those roots to OpenClaw through the existing `plugins.load.paths` mechanism.
+Support OpenClaw runtime plugins by OpenClaw plugin id, not by install source.
 
-That is the right first slice because OpenClaw already supports loading a prepared plugin directory whose dependencies are already present. Nix is good at producing that prepared directory. OpenClaw does not need to pretend `openclaw plugins install` ran.
-
-V1a does need one small OpenClaw Nix-mode compatibility fix: config-origin plugin roots under `/nix/store` must pass the same Nix-store trust policy that OpenClaw already uses for hardlinked plugin files. Without that, remote Linux builders can expose copied Nix store paths as uid `65534`, and OpenClaw blocks the plugin as suspiciously owned even though the root is immutable store content. nix-openclaw carries that patch until OpenClaw upstream has it.
-
-Because load-path plugins have `origin = "config"`, nix-openclaw must also generate the minimal upstream-shaped activation policy for selected runtime plugins:
-
-```json
-{
-  "plugins": {
-    "entries": {
-      "slack": { "enabled": true }
-    }
-  }
-}
-```
-
-If the user configured a restrictive `plugins.allow`, that same policy also includes the selected runtime plugin id in `plugins.allow`.
-
-Without a rendered activation policy, nix-openclaw would be relying on OpenClaw's runtime auto-enable pass to synthesize one at gateway startup. That is not a declarative contract. The Nix-rendered `openclaw.json` must already say which plugin roots are selected and enabled, so config evaluation, status, and gateway startup all agree before mutable runtime state is involved.
-
-OpenClaw's runtime auto-enable remains useful upstream behavior. nix-openclaw should treat it as a convenience layer, not as the source of truth for Nix-managed runtime plugins.
-
-V1a scope is official OpenClaw runtime packages that need no dependency materialization inside nix-openclaw: packages with no runtime dependencies, or packages whose runtime dependencies are already bundled in the published tarball. Slack is the reported example. Packages that publish a shrinkwrap but still require dependency materialization, such as Codex, are V1b.
-
-User-facing Nix:
+Users write:
 
 ```nix
 programs.openclaw.runtimePlugins = [
   "slack"
+  "discord"
 ];
-
-programs.openclaw.config = {
-  channels.slack = {
-    mode = "socket";
-    appToken.source = "env";
-    appToken.provider = "env";
-    appToken.id = "SLACK_APP_TOKEN";
-    botToken.source = "env";
-    botToken.provider = "env";
-    botToken.id = "SLACK_BOT_TOKEN";
-  };
-};
 ```
 
-Generated OpenClaw config shape:
+They do not write `npm:@openclaw/slack`, `clawhub:@openclaw/whatsapp`, or an
+OpenClaw mutable install command in Nix config.
+
+nix-openclaw reads the pinned OpenClaw source catalogs, decides which catalog
+rows it can build reproducibly, generates checked-in locks for those rows, and
+renders normal OpenClaw config:
 
 ```json
 {
@@ -80,485 +39,304 @@ Generated OpenClaw config shape:
 }
 ```
 
-Do not add per-plugin runtime config under `runtimePlugins`. Runtime configuration stays in `programs.openclaw.config`, exactly where upstream OpenClaw defines it.
+Runtime settings stay in upstream OpenClaw config:
 
-## Problem
+```nix
+programs.openclaw = {
+  runtimePlugins = [ "slack" ];
 
-OpenClaw externalized many user-facing integrations into runtime plugins. Slack is only the reported example.
+  config.channels.slack = {
+    enabled = true;
+    appToken.source = "env";
+    appToken.provider = "env";
+    appToken.id = "SLACK_APP_TOKEN";
+    botToken.source = "env";
+    botToken.provider = "env";
+    botToken.id = "SLACK_BOT_TOKEN";
+  };
+};
+```
 
-On a mutable install, users run:
+That is the whole user model:
+
+- `runtimePlugins` selects supported OpenClaw runtime plugin ids.
+- `programs.openclaw.config` configures OpenClaw runtime behavior.
+
+Unsupported ids are rejected by Nix evaluation. The generated report is
+maintainer machinery for deciding which builder gap to fix next.
+
+## Why This Exists
+
+OpenClaw moved integrations such as Slack out of the gateway core and into
+runtime plugins. Mutable OpenClaw users can recover by running:
 
 ```bash
 openclaw plugins install @openclaw/slack
 ```
 
-That mutable command does four jobs:
+That is not acceptable as the nix-openclaw source of truth.
 
-1. resolves the npm or ClawHub package;
-2. installs dependencies into OpenClaw-owned mutable state;
-3. records install metadata in `$OPENCLAW_STATE_DIR/plugins/installs.json`;
-4. enables and loads the plugin through OpenClaw's plugin registry.
+In Nix mode:
 
-In Nix mode, OpenClaw intentionally disables plugin install/update/uninstall and config mutation. That is correct. nix-openclaw must provide the plugin artifact declaratively.
+- Home Manager activation must not resolve packages or mutate plugin install
+  state;
+- user builds must not follow `latest`, dist-tags, semver ranges, npm
+  registry state, or ClawHub discovery state;
+- rollback must not leave stale mutable install receipts claiming removed
+  plugins are still installed;
+- OpenClaw should load the same runtime plugin shape it normally loads, but
+  from Nix-built roots selected declaratively.
 
-## Goals and Non-Goals
+The Slack bug is therefore a missing declarative catalog path, not a special
+Slack fix.
 
-Goals:
+## One Model
 
-- restore complete-tarball OpenClaw runtime plugins, such as Slack, for nix-openclaw users without mutable installs;
-- keep OpenClaw's runtime plugin model intact instead of inventing a parallel Nix-only plugin runtime;
-- make plugin selection visible in rendered `openclaw.json`, not hidden in gateway startup heuristics;
-- pin official plugin artifacts to the same OpenClaw release pin nix-openclaw already uses;
-- make the first shipped builder use exact tarballs, fixed hashes, no semver resolution, and no package manager execution;
-- remove or hard-block the current `customPlugins.source = "npm:..."` path before it becomes supported API.
+The only supported user selector is an OpenClaw plugin id:
 
-Non-goals for V1a:
+```nix
+programs.openclaw.runtimePlugins = [ "slack" ];
+```
 
-- arbitrary npm specs;
-- third-party/community runtime plugins;
-- ClawHub runtime plugins;
-- raw `plugins.load.paths` mixed with `runtimePlugins` in the same instance;
-- non-bundled dependency materialization;
-- lifecycle scripts or native rebuilds;
-- a new upstream OpenClaw install source;
-- Nix-aware plugin provenance in OpenClaw status output.
+That id must come from the pinned OpenClaw catalogs and must have a generated
+nix-openclaw lock. Source strings such as `npm:...`, `clawhub:...`, git paths,
+local paths, archives, and marketplace references are not accepted here.
 
-Non-negotiables:
+npm, ClawHub, tarballs, bundled dependencies, and dependency materialization are
+not user-facing plugin types. They are only internal facts the lock generator
+uses while trying to turn an OpenClaw catalog id into an immutable Nix store
+plugin root:
 
-- user builds must not query npm;
-- user builds must not run `npm install`, `pnpm`, `yarn`, or `corepack`;
-- activation must not mutate OpenClaw plugin state;
-- rollback must not leave stale installed-plugin records behind;
-- selected runtime plugins must be explicit in the generated config;
-- dependencies bundled in a plugin tarball must be reviewable through shrinkwrap-backed validation, not accepted as an opaque `node_modules`.
+```text
+pinned OpenClaw catalog id
+  -> selected artifact source from catalog metadata
+  -> checked-in nix-openclaw lock, or explicit skip reason
+  -> immutable /nix/store plugin root
+  -> plugins.load.paths + plugins.entries.<id>.enabled
+  -> upstream OpenClaw loader
+```
 
-## What OpenClaw Already Supports
+A catalog id is supported when it has a generated lock and builds a valid
+plugin root. Otherwise it is unsupported until nix-openclaw can build that same
+catalog id immutably. The reason belongs in the generated maintainer report, not
+in the user model.
 
-The important split in OpenClaw is:
+Example: `whatsapp` is not a "ClawHub plugin" in nix-openclaw docs. It is the
+OpenClaw catalog id `whatsapp`. Today the report says that id is skipped because
+nix-openclaw cannot yet materialize the catalog-selected ClawHub artifact. If
+that builder gap is fixed later, the user config is still:
 
-- install/update commands prepare plugin directories and write mutable install records;
-- runtime loading reads already-prepared plugin directories;
-- startup and reload do not run package managers.
+```nix
+programs.openclaw.runtimePlugins = [ "whatsapp" ];
+```
 
-OpenClaw has two relevant prepared-directory paths today:
+## Admission Rule
 
-1. `plugins.load.paths`: explicit config-selected plugin directories.
-2. installed plugin records: mutable install ledger entries whose `installPath` points at a prepared directory.
+nix-openclaw has one admission test for runtime plugin support:
 
-For Nix, `plugins.load.paths` plus `plugins.entries.<id>.enabled = true` is the better V1a fit. A Nix-built plugin root is an explicit, immutable, already-prepared directory. The generated entry is normal OpenClaw activation policy for a config-origin plugin. Together they match the ownership boundary: Nix prepares and selects the directory; OpenClaw loads and configures it.
+- input: one row from the pinned OpenClaw catalogs;
+- output: either one checked-in Nix lock plus package, or one explicit generated
+  failure reason;
+- invariant: user builds, evaluation, activation, and runtime never resolve
+  packages, run npm/pnpm/yarn/corepack, call `openclaw plugins install`, or
+  fetch the network.
 
-This means the earlier "read-only installed index" idea is not required for the complete-tarball fix. It solves provenance and diagnostics, not loading.
+This removes the old hand-maintained four-plugin list as the support authority.
+The support authority becomes generated lock data plus
+`nix/generated/openclaw-runtime-plugins/report.json`.
 
-There is one subtle upstream behavior worth naming: OpenClaw can auto-enable plugins at runtime when it sees related config, such as a configured channel or provider. Gateway startup applies that pass without writing config. That does not replace Nix activation for four reasons:
+The lock generator may need source-specific code internally, but those code
+paths are implementation detail behind the same admission test. Fixing one
+generator limitation may make one catalog id or many catalog ids supported; it
+must not create new user syntax or a parallel plugin model.
 
-1. it is derived runtime config, not rendered declarative config;
-2. startup planning still checks the raw activation source config when deciding whether a non-bundled configured-channel plugin is explicitly trusted;
-3. it depends on OpenClaw's current auto-enable heuristics, not on the user's Nix selection;
-4. for Nix, `runtimePlugins = [ "slack" ]` is the explicit selection and should be visible in generated `plugins.entries`, not inferred later from `channels.slack`.
+The report is the engineering queue, not a product model.
 
-So V1a uses OpenClaw's prepared-directory loader, but does not use OpenClaw's runtime auto-enable as the primary selection mechanism.
+## Pinning Policy
 
-## Why Not Pretend `plugins install` Ran?
+The root of trust is:
 
-Because pretending creates mutable state that Nix cannot own correctly.
+```nix
+nix/sources/openclaw-source.nix
+```
+
+For OpenClaw-owned catalog rows, nix-openclaw uses the pinned OpenClaw
+`releaseVersion`. If OpenClaw is pinned to:
+
+```nix
+releaseVersion = "2026.5.27";
+```
+
+then `slack` resolves to `@openclaw/slack@2026.5.27`, not
+`@openclaw/slack@latest`.
+
+The lock updater may use the network because it is a maintainer command that
+refreshes checked-in lock data. User evaluation, build, activation, and runtime
+must consume checked-in locks and Nix store artifacts only.
+
+Do not silently widen this rule. A catalog id is supported only when the lock
+records exact artifact identity, integrity, dependency mode, runtime entry, and
+OpenClaw compatibility evidence.
+
+## What nix-openclaw Renders
+
+For each Home Manager instance, nix-openclaw computes selected runtime plugin
+ids. Instance-level `runtimePlugins` replaces the top-level list.
+
+For each selected id, nix-openclaw:
+
+- adds the Nix store plugin root to `plugins.load.paths`;
+- sets `plugins.entries.<id>.enabled = true`;
+- merges the id into `plugins.allow` only when the user already configured a
+  restrictive allowlist.
+
+It is a Nix evaluation error to:
+
+- select an unsupported id;
+- list the same id twice;
+- select a runtime plugin id that collides with a nix-openclaw plugin id;
+- select an id and also set `plugins.entries.<id>.enabled = false`;
+- select an id and also list it in `plugins.deny`;
+- mix `runtimePlugins` with raw user-authored `plugins.load.paths` in the same
+  instance;
+- write `plugins.installs` in rendered user config.
+
+The raw `plugins.load.paths` restriction keeps the source of truth unambiguous:
+selected ids come from generated Nix locks, not from arbitrary user-authored
+runtime paths.
+
+## Why Not Pretend Installation Happened?
+
+Because OpenClaw install receipts are mutable state, not the declarative
+runtime contract Nix should own.
 
 | Option | Verdict |
 | --- | --- |
-| Nix builds a plugin root, adds it to `plugins.load.paths`, and generates `plugins.entries.<id>.enabled = true`. | Selected V1a design. Existing OpenClaw surface, no mutable state, plus one Nix-mode ownership compatibility patch for `/nix/store` roots. |
-| Write `plugins.installs` into `openclaw.json`. | Reject. OpenClaw marks this as internal transient command-flow state, omits it from the public schema, strips it on writes, and migrates it toward the installed index. |
-| Write `$OPENCLAW_STATE_DIR/plugins/installs.json` during Home Manager activation. | Reject. Rollback would not roll back the mutable ledger. Stale state could claim a plugin is installed after Nix removed it. |
-| Fake OpenClaw's npm root under `$OPENCLAW_STATE_DIR/npm`. | Reject. OpenClaw's recovery scan is specifically for mutable npm-root recovery. Nix must not impersonate npm-owned state. |
-| Add an upstream read-only installed index now. | Reject for V1a. It improves `origin = nix` provenance and diagnostics, but is not needed to load, validate, or run the plugin when we use generated load paths. |
-| Run `openclaw plugins install` during activation, or run networked/semver `npm install` during Nix builds. | Reject. Activation-time mutation and registry resolution are not declarative and widen the supply-chain attack surface. |
-
-OpenClaw can already read a fully assembled plugin folder when config points at it and enables it. Nix makes that folder and emits that normal OpenClaw config. The rejected designs all try to forge OpenClaw's mutable receipt.
-
-## User-Facing Model
-
-`runtimePlugins` declares selected runtime plugin artifacts:
-
-```nix
-programs.openclaw.runtimePlugins = [
-  "slack"
-  "discord"
-];
-```
-
-For each selected id, nix-openclaw generates:
-
-```nix
-programs.openclaw.config.plugins.load.paths = [
-  "/nix/store/...-openclaw-runtime-plugin-slack"
-];
-
-programs.openclaw.config.plugins.entries.slack.enabled = true;
-```
-
-Plugin config remains upstream OpenClaw config. For channel plugins such as Slack, that means `channels.slack`, not `runtimePlugins` and not `plugins.entries.slack.config`.
-
-For plugins that define their own entry config, the config still goes in the upstream location:
-
-```nix
-programs.openclaw.config.plugins.entries.somePlugin.config = {
-  # OpenClaw-defined plugin entry config fields.
-};
-```
-
-If the user already has a restrictive plugin allowlist, nix-openclaw adds selected runtime plugin ids to that allowlist. It must not create a restrictive allowlist when the user did not configure one.
-
-```nix
-programs.openclaw.config.plugins.allow = [
-  # Existing user policy.
-  "some-other-plugin"
-
-  # Added by runtimePlugins = [ "slack" ].
-  "slack"
-];
-```
-
-It is an eval error to select a runtime plugin and also disable or deny it in raw OpenClaw config:
-
-```nix
-programs.openclaw.runtimePlugins = [ "slack" ];
-
-# Contradiction: remove "slack" from runtimePlugins instead.
-programs.openclaw.config.plugins.entries.slack.enabled = false;
-programs.openclaw.config.plugins.deny = [ "slack" ];
-```
-
-It is also an eval error to:
-
-- list the same `runtimePlugins` id twice;
-- select a `runtimePlugins` id that collides with a nix-openclaw-managed plugin id;
-- set raw `programs.openclaw.config.plugins.load.paths` in the same instance as `runtimePlugins`.
-
-That raw load-path restriction does not reject load paths generated by nix-openclaw's own plugin contracts. It only blocks unmanaged OpenClaw runtime plugin paths from sharing the supported `runtimePlugins` lane.
-
-Per-instance override:
-
-```nix
-programs.openclaw.runtimePlugins = [ "slack" ];
-
-programs.openclaw.instances.work.runtimePlugins = [ "slack" "discord" ];
-programs.openclaw.instances.personal.runtimePlugins = [ "discord" ];
-```
-
-Top-level `runtimePlugins` is the default for every instance. An instance-level list replaces it.
-
-## Version Pinning Policy
-
-Never use npm `latest` in user builds.
-
-nix-openclaw already pins the OpenClaw source in `nix/sources/openclaw-source.nix`:
-
-```nix
-releaseVersion = "2026.5.26";
-```
-
-For official `@openclaw/*` runtime plugins, nix-openclaw ties the plugin package version to that OpenClaw release version:
-
-```text
-OpenClaw package:      2026.5.26
-@openclaw/slack:      2026.5.26
-@openclaw/discord:    2026.5.26
-```
-
-That is the V1a rule because the official packages are co-versioned with OpenClaw and declare host compatibility against the same release line. For example, `@openclaw/slack@2026.5.26` declares `peerDependencies.openclaw >=2026.5.26`, `openclaw.compat.pluginApi >=2026.5.26`, and runtime entries under `openclaw.runtimeExtensions`.
-
-V1a lock generation does this:
-
-1. read the selected OpenClaw `releaseVersion`;
-2. read OpenClaw's official external plugin catalogs: `official-external-channel-catalog.json`, `official-external-provider-catalog.json`, and `official-external-plugin-catalog.json`;
-3. for each curated id, map the catalog npm spec to an exact package spec, such as `@openclaw/slack@2026.5.26`;
-4. fail if the selected id has no package published for that exact OpenClaw version;
-5. record the root tarball URL, npm SRI integrity, and Nix hash;
-6. read the package's published `npm-shrinkwrap.json` when present;
-7. record the package graph from the shrinkwrap when present: package paths, names, versions, integrity metadata, optional flags, `os`, `cpu`, `bin`, and lifecycle-script metadata;
-8. record the declared `dependencies`, `optionalDependencies`, `bundleDependencies`, and `bundledDependencies`;
-9. write deterministic lock files under `nix/generated/openclaw-runtime-plugins/`.
-
-The maintainer refresh command lives in `nix/scripts/update-openclaw-runtime-plugin-locks.mjs`. It is allowed to query npm because it is a maintainer lock-update command, not part of user builds. Its output is checked in and reviewed.
-
-Each generated lock entry records:
-
-```nix
-{
-  id = "slack";
-  attrName = "slack";
-  packageName = "@openclaw/slack";
-  version = "2026.5.26";
-  tarballUrl = "https://registry.npmjs.org/@openclaw/slack/-/slack-2026.5.26.tgz";
-  npmIntegrity = "sha512-...";
-  nixHash = "sha256-...";
-  v1aClass = "bundled-dependencies";
-  openclawCompat = ">=2026.5.26";
-  peerOpenClaw = ">=2026.5.26";
-  dependencies = {
-    # declared package dependencies
-  };
-  optionalDependencies = {
-    # declared optional dependencies
-  };
-  bundleDependencies = [
-    # declared bundled dependency names
-  ];
-  shrinkwrapPackages = {
-    # shrinkwrap package graph when present
-  };
-}
-```
-
-V1a builds consume the checked-in root lock plus the packaged shrinkwrap. They do not query npm and do not resolve semver. They also do not run npm/pnpm/yarn/corepack because V1a only accepts packages whose published tarball is already complete for runtime loading.
-
-For packages with bundled dependencies, V1a does not fetch each dependency tarball independently. The root package tarball hash is the byte-for-byte authority for the bundled dependency tree. The extracted shrinkwrap graph is a review and validation artifact: it lets the builder reject missing, extra, or mismatched bundled package directories instead of blindly trusting an opaque tarball.
-
-If an official catalog entry is not published for nix-openclaw's pinned OpenClaw version, nix-openclaw does not silently take a newer npm version. That plugin is unavailable for that nix-openclaw release until the OpenClaw pin moves.
-
-Tradeoffs:
-
-| Policy | Verdict |
-| --- | --- |
-| Tie official plugin versions to OpenClaw `releaseVersion`. | Selected V1a rule. Reproducible, compatible, reviewable. |
-| Use npm `latest` or dist-tags. | Reject. Non-reproducible and supply-chain unsafe. |
-| Let users write arbitrary npm specs and hashes. | Reject for V1a. Powerful but creates a support surface before the builder and diagnostics are proven. |
-| Per-plugin explicit version overrides. | Reject for V1a. Hotfix overrides need their own exact-version policy and proof gates. |
-| Third-party/community plugins. | Reject for V1a. They need explicit locks and compatibility policy; do not mix them into official-plugin V1a. |
-
-## Builder
-
-V1a builder: complete official packages.
-
-The first shipped builder supports only packages whose published tarball is already complete enough to load without dependency installation. That includes packages with no runtime dependencies and packages that already publish bundled runtime dependencies. Slack is in the bundled class. This keeps the first fix small: unpack the official tarball, verify it, link the host `openclaw` peer, and expose the result through `plugins.load.paths`.
-
-Example:
-
-```nix
-buildOpenClawRuntimePlugin {
-  id = "slack";
-  packageName = "@openclaw/slack";
-  version = "2026.5.26";
-  src = fetchurl {
-    url = "https://registry.npmjs.org/@openclaw/slack/-/slack-2026.5.26.tgz";
-    hash = "sha256-...";
-  };
-  npmIntegrity = "sha512-...";
-  packageLock = ./generated/openclaw-runtime-plugins/slack-2026.5.26.nix;
-  openclawPackage = pkgs.openclaw-gateway;
-}
-```
-
-V1a rules:
-
-1. unpack the root package tarball;
-2. verify package name, version, plugin id, runtime entry, npm integrity, and OpenClaw host compatibility;
-3. if the package declares runtime dependencies, verify those dependencies are declared as bundled;
-4. for packages with runtime dependencies or a bundled `node_modules`, require `npm-shrinkwrap.json`;
-5. verify bundled dependency directories are accounted for by the shrinkwrap graph;
-6. use `bundleDependencies`/`bundledDependencies` only as a top-level cross-check, not as the dependency graph authority;
-7. fail on unexpected bundled package directories or unbundled runtime dependencies;
-8. create `node_modules/openclaw -> ${openclawPackage}/lib/openclaw` for packages that declare the `openclaw` peer;
-9. verify there are no broken symlinks and the runtime entry exists.
-
-Initial curated package map:
-
-| `runtimePlugins` id | Nix attr | npm package | V1a class |
-| --- | --- | --- | --- |
-| `slack` | `openclawRuntimePlugins.slack` | `@openclaw/slack` | bundled dependencies |
-| `discord` | `openclawRuntimePlugins.discord` | `@openclaw/discord` | bundled dependencies |
-| `brave` | `openclawRuntimePlugins.brave` | `@openclaw/brave-plugin` | no runtime dependencies |
-| `diagnostics-prometheus` | `openclawRuntimePlugins.diagnosticsPrometheus` | `@openclaw/diagnostics-prometheus` | no runtime dependencies |
-
-Adding another official package to the curated set is a lock update plus the same builder and gateway proof gates. It is not a user-provided version override.
-
-Deferred package class: non-bundled dependencies.
-
-Packages like `@openclaw/codex` publish `npm-shrinkwrap.json` but do not bundle runtime dependencies. That is a separate problem. They are not part of the complete-tarball fix.
-
-The next design must prove one of these before shipping those packages:
-
-- an existing nixpkgs npm-dependency builder can materialize the checked-in lock data offline without lifecycle scripts or mutable package-manager state; or
-- a custom materializer can reproduce npm lockfile semantics well enough to be safer than using the existing Nix/npm tooling.
-
-That proof is intentionally outside V1a. Hand-rolling dependency materialization in this RFC would be bigger and riskier than the complete-tarball fix.
-
-The current `customPlugins.source = "npm:..."` bridge must be removed or hard-blocked. `customPlugins` itself remains the nix-openclaw plugin surface for Nix-managed tools and skills; only the npm runtime-plugin bridge is unsafe. It runs `npm install` inside a fixed-output derivation and deletes the lock output after the copy. A recursive output hash proves final bytes, but it does not give maintainers a reviewable dependency graph.
-
-## nix-openclaw Implementation
-
-Add a curated package set:
-
-```nix
-pkgs.openclawRuntimePlugins.slack
-pkgs.openclawRuntimePlugins.discord
-pkgs.openclawRuntimePlugins.brave
-pkgs.openclawRuntimePlugins.diagnosticsPrometheus
-```
-
-Each package exposes:
-
-```nix
-passthru.openclawRuntimePlugin = {
-  id = "slack";
-  packageName = "@openclaw/slack";
-  version = "2026.5.26";
-  source = "npm";
-  integrity = "sha512-...";
-  loadPath = "${finalPackage}";
-};
-```
-
-The Home Manager module:
-
-1. validates ids in `programs.openclaw.runtimePlugins`;
-2. selects the matching package from `pkgs.openclawRuntimePlugins`;
-3. prepends each package root to generated `plugins.load.paths`;
-4. generates `plugins.entries.<id>.enabled = true` for each selected runtime plugin;
-5. if the user already configured `plugins.allow`, merges selected runtime plugin ids into that allowlist;
-6. rejects duplicate selected ids and collisions with nix-openclaw-managed plugin ids;
-7. rejects raw user-authored `plugins.load.paths` in any instance that uses `runtimePlugins`;
-8. sets no plugin-specific runtime config;
-9. runs no package manager;
-10. runs no OpenClaw plugin mutator;
-11. writes no `plugins.installs`;
-12. writes no `$OPENCLAW_STATE_DIR/plugins/installs.json`;
-13. preserves the existing wrapper invariant `OPENCLAW_NIX_MODE=1` so OpenClaw accepts `/nix/store` plugin roots under the existing hardlink policy.
-
-Target files:
-
-- `nix/modules/home-manager/openclaw/options.nix`: add top-level `runtimePlugins`.
-- `nix/modules/home-manager/openclaw/options-instance.nix`: add per-instance `runtimePlugins`.
-- `nix/modules/home-manager/openclaw/config.nix`: merge generated load paths into rendered OpenClaw config.
-- `nix/modules/home-manager/openclaw/options.nix`: remove or explicitly reject npm-only `customPlugins` fields such as `id`, `hash`, and `enabled`.
-- `nix/modules/home-manager/openclaw/plugins.nix`: remove or reject `customPlugins` entries whose source starts with `npm:`.
-- `nix/packages/default.nix`: expose `openclawRuntimePlugins`.
-- `nix/lib/openclaw-runtime-plugin.nix`: build immutable plugin roots from locks.
-- `nix/scripts/update-openclaw-runtime-plugin-locks.mjs`: maintainer lock refresh command.
-- `nix/generated/openclaw-runtime-plugins/`: checked-in root tarball and package-graph lock data.
-- `nix/checks/`: builder, module-eval, and gateway smoke checks.
-- `AGENTS.md`, `README.md`, and `docs/`: remove guidance that presents `customPlugins.source = "npm:..."` as supported.
-
-Implementation order:
-
-1. remove or hard-block `customPlugins.source = "npm:..."`;
-2. generate checked-in lock data for the official package ids supported in V1a;
-3. add `buildOpenClawRuntimePlugin` for no-dependency and shrinkwrap-verified bundled-dependency packages;
-4. expose `pkgs.openclawRuntimePlugins.<id>` for the curated V1a set;
-5. add `programs.openclaw.runtimePlugins` and per-instance override support;
-6. render load paths, explicit entries, allowlist merges, and contradiction assertions;
-7. run the module, builder, and gateway proof gates before documenting the feature as supported.
-
-## When Upstream Changes Become Worth It
-
-A new OpenClaw plugin lifecycle surface is not required for V1a.
-
-That claim depends on two things: the generated OpenClaw config must include both the load path and the explicit plugin entry, and OpenClaw must treat `/nix/store` plugin roots in `OPENCLAW_NIX_MODE=1` as trusted immutable roots for ownership checks. A load path alone is discovery, not a complete gateway-startup policy for config-origin channel plugins.
-
-They become worth doing if V1a proves we need one of these:
-
-- status/list/inspect to display `origin: nix` instead of `origin: config`;
-- Nix-specific diagnostics when a Nix-generated load path fails;
-- a first-class read-only installed index for Nix-managed provenance;
-- OpenClaw docs that describe Nix-managed runtime plugins as a first-party install source.
-
-Those are provenance and diagnostic improvements. They are not the core loading fix.
-
-If we add a read-only installed index, it is an additive OpenClaw input that is ignored outside `OPENCLAW_NIX_MODE=1`. It must never write declarative records back to `plugins/installs.json`.
-
-## What Would Falsify This Design?
-
-The RFC is wrong, and an upstream OpenClaw change becomes required, if any of these are true after implementation:
-
-- OpenClaw cannot discover a valid `/nix/store` plugin root from `plugins.load.paths` in `OPENCLAW_NIX_MODE=1`.
-- A config-origin plugin with `plugins.entries.<id>.enabled = true` and any required allowlist entry still cannot be included in the gateway startup plan.
-- `openclaw status` or config validation still reports "plugin not installed" when the generated load path is present and the plugin appears in the metadata snapshot.
-- Slack's published package for the pinned OpenClaw version is not actually runtime-complete after unpacking and peer-linking OpenClaw.
-- rejecting raw `plugins.load.paths` with `runtimePlugins` blocks a legitimate workflow that V1a must support.
-
-Those are the hard gates. If one fails, do not paper over it in nix-openclaw with mutable state. Either narrow V1a further, fix the generated config, or make the smallest upstream change that removes the blocker.
-
-## Supported V1a
-
-Supported:
-
-- curated official OpenClaw runtime plugin ids;
-- exact package versions tied to nix-openclaw's OpenClaw release pin;
-- complete published tarballs that need no runtime dependency installation;
-- bundled runtime dependencies, when present, verified against `npm-shrinkwrap.json`;
-- immutable plugin roots in the Nix store;
-- loading through generated `plugins.load.paths`;
-- runtime config through `programs.openclaw.config`;
-- macOS and Linux.
-
-Unsupported:
-
-- arbitrary npm specs;
-- arbitrary ClawHub specs;
-- git/path runtime plugins through `runtimePlugins`;
-- user-authored install records;
-- activation-time or runtime plugin installs;
-- networked or semver package-manager dependency resolution inside Nix builds;
-- non-bundled npm dependency materialization;
-- lifecycle scripts and native rebuilds unless explicitly modeled.
+| Build immutable plugin roots and render `plugins.load.paths` plus enabled entries. | Selected. It uses OpenClaw's real loader and keeps Nix as source of truth. |
+| Run `openclaw plugins install` during Home Manager activation. | Reject. Activation would mutate state and depend on live network/package-manager behavior. |
+| Write `$OPENCLAW_STATE_DIR/plugins/installs.json`. | Reject. Rollback would not roll back the mutable receipt. Stale records can claim removed plugins still exist. |
+| Write `plugins.installs` into `openclaw.json`. | Reject. This is OpenClaw internal command-flow state, not public declarative API. |
+| Ask users to choose `npm:` or `clawhub:` for OpenClaw catalog ids. | Reject. It leaks transport details and bypasses the pinned catalog policy. |
+
+If OpenClaw later adds a first-class read-only provenance input for Nix-managed
+plugins, use it for better diagnostics. It is not required for the core loading
+model as long as load paths, enabled entries, registry isolation, and status
+proof gates pass.
+
+## Implementation Work
+
+The implementation has four moving pieces:
+
+1. Scan the pinned OpenClaw catalogs.
+2. Generate lock files and one report covering every catalog id.
+3. Expose package outputs from generated locks.
+4. Render `runtimePlugins` as OpenClaw load paths and enabled entries.
+
+The maintenance loop is also one path:
+
+1. update the pinned OpenClaw source;
+2. regenerate locks and the report;
+3. build every supported id;
+4. if an important id is skipped, fix the generator or builder until that same
+   id has a lock.
+
+Those fixes are maintainer work inside the single pipeline. The only acceptable
+public result is that more OpenClaw catalog ids become valid in
+`runtimePlugins`.
 
 ## Proof Gates
 
-Before shipping V1a:
+Before shipping the current RFC 1 slice:
 
-1. Run the lock refresh command twice for the curated V1a set and confirm the second run produces no diff.
-2. Build every curated V1a package without invoking npm/pnpm/yarn/corepack.
-3. Verify bundled package roots such as Slack and Discord have `package.json`, `openclaw.plugin.json`, runtime JS, bundled dependency tree, and `node_modules/openclaw` peer link.
-4. Verify no-runtime-dependency packages such as Brave and diagnostics-prometheus do not require bundled dependency metadata.
-5. Verify bundled dependency directories match `npm-shrinkwrap.json`; `bundleDependencies` alone is not accepted as graph evidence.
-6. Verify packages with runtime dependencies but no bundled dependency tree are rejected as V1b.
-7. Evaluate Home Manager config and confirm generated `plugins.load.paths` contains the Nix store plugin root.
-8. Evaluate Home Manager config and confirm generated `plugins.entries.slack.enabled = true`.
-9. Evaluate Home Manager config with an existing restrictive `plugins.allow` and confirm Slack is added to it.
-10. Evaluate Home Manager config with `runtimePlugins = [ "slack" ]` plus `plugins.entries.slack.enabled = false` or `plugins.deny = [ "slack" ]` and confirm it fails with a direct contradiction error.
-11. Evaluate Home Manager config with duplicate `runtimePlugins` ids and confirm it fails with a direct duplicate-id error.
-12. Evaluate Home Manager config with `runtimePlugins = [ "slack" ]` plus raw `plugins.load.paths` and confirm it fails with a direct unsupported-mix error.
-13. Start OpenClaw in `OPENCLAW_NIX_MODE=1` with Slack configured.
-14. Verify Slack appears in plugin/channel discovery from the generated load path.
-15. Verify the gateway startup plugin plan includes Slack.
-16. Verify `openclaw status` does not report Slack as "plugin not installed."
-17. Verify config validation accepts Slack channel config when the generated load path is present.
-18. Verify Linux and Darwin.
-19. Remove or hard-block the current `customPlugins.source = "npm:..."` bridge from public docs and supported paths.
+1. Run the lock updater twice and prove the second run produces no diff.
+2. Confirm the updater reads the pinned OpenClaw source catalogs.
+3. Confirm every catalog row appears in the generated report with either a lock
+   or one failure reason.
+4. Confirm every supported row has exact version, root integrity, Nix hash,
+   manifest id, runtime entry, host compatibility, and dependency-mode evidence.
+5. Build every supported plugin root without package-manager execution or
+   network access.
+6. Confirm every unsupported row has one specific generated reason.
+7. Evaluate Home Manager cases for load paths, enabled entries, allowlist merge,
+   duplicate ids, unsupported ids, denied ids, disabled entries, raw load paths,
+   and `plugins.installs`.
+8. Validate OpenClaw in Nix mode with Slack configured, and verify `openclaw
+   status` does not tell the user to run `openclaw plugins install` for Slack.
+9. Start the gateway in Nix mode with a no-network runtime plugin and verify the
+   gateway discovers the generated plugin root.
+10. Verify stale mutable plugin registry records cannot shadow or alter selected
+    Nix-managed runtime plugins.
+11. Verify Darwin and Linux checks.
+12. Update user docs with supported and rejected-input examples, and the rule
+    that `runtimePlugins` uses plugin ids, not source strings.
 
-Before shipping V1b:
+The RFC is not falsified because some catalog rows remain skipped. It is
+falsified if a row is silently ignored, dynamically resolved during user builds,
+loaded through mutable install state, or documented as supported without a
+checked-in lock and build proof.
 
-1. Build `codex` from checked-in lock data with no network access.
-2. Prove how lifecycle-script packages in the Codex shrinkwrap are handled.
-3. Run runtime import/load checks for the Codex plugin entry.
-4. Run the same gateway/status/config-validation checks as V1a.
+## Falsifiers
+
+This design needs to change if any of these are true:
+
+- OpenClaw cannot load a valid `/nix/store` plugin root from
+  `plugins.load.paths` in Nix mode.
+- `plugins.entries.<id>.enabled = true` is insufficient for a config-origin
+  plugin to enter the gateway startup plan.
+- `openclaw status` still reports "plugin not installed" for a selected
+  Nix-managed plugin after registry isolation, generated load paths, and enabled
+  entries are present.
+- OpenClaw requires mutable install receipts for validation rather than using
+  the loaded plugin registry.
+- A source cannot be pinned to exact artifact identity and integrity.
+- Dependency materialization cannot be reproduced from checked-in lock data
+  without package-manager resolution during user builds.
+
+If a falsifier hits, do not paper over it with mutable state. Narrow the
+supported report rows, fix generated config, or make the smallest upstream
+OpenClaw change that preserves the declarative boundary.
+
+## Out Of Scope
+
+These are not RFC 1:
+
+- user-supplied runtime plugin sources of any kind;
+- Nix-only plugin runtime settings;
+- plugin-to-agent assignment;
+- mutable install/update/uninstall in Nix mode;
+- activation-time dependency installation;
+- fake install records.
+
+Do not add placeholder sections for these. If nix-openclaw ever supports
+user-supplied runtime plugin sources, that needs its own design because it
+changes the public input model. It must not contaminate RFC 1.
 
 ## Evidence
 
-OpenClaw source:
+OpenClaw source evidence:
 
-- `docs/plugins/dependency-resolution.md`: runtime loading does not run package managers; install/update owns dependency work.
-- `src/plugins/discovery.ts`: `plugins.load.paths` are discovered as explicit config-origin plugin paths.
-- `src/plugins/hardlink-policy.ts`: config-origin plugins under `/nix/store` are allowed in `OPENCLAW_NIX_MODE=1`.
-- `src/plugins/config-activation-shared.ts`: non-bundled/config-origin plugins are explicitly selected by `plugins.entries.<id>.enabled = true` or `plugins.allow`.
-- `src/plugins/gateway-startup-plugin-ids.ts`: configured channel plugins with non-bundled origins require explicit activation before gateway startup includes them.
-- `src/gateway/server-startup-config.ts`: OpenClaw applies plugin auto-enable at gateway startup without writing config; nix-openclaw must not rely on that as its declarative selection source.
-- `src/config/plugin-auto-enable.shared.ts`: auto-enable derives activation from configured channels/providers and may materialize effective config; it is a runtime convenience layer, not a Nix-rendered contract.
-- `src/plugins/channel-plugin-ids.test.ts`: non-bundled configured-channel owners that are only auto-enabled are not treated as explicitly trusted for startup planning.
-- `src/plugins/manifest-registry.ts`: duplicate config-origin load-path plugins get generic config precedence; V1a duplicate handling is a nix-openclaw responsibility.
-- `src/channels/plugins/read-only.ts`: channel status/read-only discovery is built from the plugin metadata snapshot and loaded channel plugins.
-- `src/config/validation.ts`: known plugin ids come from the plugin registry; missing install hints happen when the plugin is not known.
-- `src/plugins/installed-plugin-index-record-reader.ts`: OpenClaw recovery scans the mutable npm root under the state directory, not arbitrary immutable package roots.
-- `src/config/types.plugins.ts`: `plugins.installs` is internal transient state and must not be persisted.
-- `src/cli/plugins-install-persist.ts`: mutable install commands write installed-plugin records and mutate config.
+- `docs/tools/plugin.md`: OpenClaw documents plugin install and official
+  catalog resolution.
+- `docs/cli/plugins.md`: OpenClaw supports `clawhub:`, `npm:`, `npm-pack:`,
+  `git:`, local path, and marketplace installs, while Nix mode disables
+  lifecycle mutators.
+- `scripts/lib/official-external-channel-catalog.json`,
+  `scripts/lib/official-external-plugin-catalog.json`, and
+  `scripts/lib/official-external-provider-catalog.json`: pinned catalog rows
+  and install metadata.
+- `src/plugins/plugin-registry-snapshot.ts`: current registry isolation
+  mechanism for Nix-managed gateways.
 
-Published package checks:
+nix-openclaw source evidence:
 
-- `@openclaw/slack@2026.5.26` has `runtimeExtensions`, `runtimeSetupEntry`, `openclaw.compat.pluginApi >=2026.5.26`, `peerDependencies.openclaw >=2026.5.26`, bundled runtime dependencies, and `npm-shrinkwrap.json`.
-- `@openclaw/discord@2026.5.26` has `runtimeExtensions`, `runtimeSetupEntry`, `openclaw.compat.pluginApi >=2026.5.26`, `peerDependencies.openclaw >=2026.5.26`, bundled runtime dependencies, and `npm-shrinkwrap.json`.
-- `@openclaw/brave-plugin@2026.5.26` and `@openclaw/diagnostics-prometheus@2026.5.26` have no runtime dependencies; they are V1a candidates even though they have no bundled dependency tree.
-- `@openclaw/codex@2026.5.26` and `@openclaw/memory-lancedb@2026.5.26` have runtime dependencies but no bundled dependency tree; they need the later dependency-materialization RFC. `@openclaw/acpx@2026.5.26` has the same external npm shape, but nix-openclaw already consumes ACPX from OpenClaw's built `dist-runtime/extensions/acpx` tree, so its follow-up is a bundled-runtime packaging audit rather than another materialized npm root.
-
-nix-openclaw source:
-
-- `nix/sources/openclaw-source.nix`: current OpenClaw release pin is the source of truth for official plugin versions.
-- `nix/modules/home-manager/openclaw/plugins.nix`: current `npm:` custom plugin bridge is marked partial and emits load paths plus entries.
-- `nix/scripts/npm-runtime-plugin-install.sh`: current bridge runs npm resolution inside the build and must not become the supported path.
+- `nix/sources/openclaw-source.nix`: pinned OpenClaw source and release
+  version.
+- `nix/generated/openclaw-runtime-plugins/`: generated runtime plugin locks and
+  support report.
+- `nix/packages/default.nix`: exposes `pkgs.openclawRuntimePlugins`.
+- `nix/modules/home-manager/openclaw/runtime-plugins.nix`: validates
+  `runtimePlugins`, renders enabled entries, merges allowlists, and rejects
+  contradictions.
+- `nix/modules/home-manager/openclaw/config.nix`: merges generated runtime
+  plugin load paths into rendered OpenClaw config and applies the current
+  stale-registry isolation bridge.

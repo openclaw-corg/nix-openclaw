@@ -132,11 +132,9 @@ let
           plugin = "runtime";
         }) (cfg.environment // inst.environment));
       userConfig = stripNulls (lib.recursiveUpdate (stripNulls cfg.config) (stripNulls inst.config));
-      pluginEntryConfig = plugins.openclawPluginEntriesConfigFor name;
-      openclawPluginLoadPaths = plugins.openclawPluginLoadPathsFor name;
       nixSkillLoadDirs = files.skillLoadDirsForInstance name;
       mergedConfigWithoutLoadPaths = stripNulls (
-        lib.recursiveUpdate (lib.recursiveUpdate baseConfig pluginEntryConfig) userConfig
+        lib.recursiveUpdate baseConfig userConfig
       );
       existingOpenClawPluginLoadPaths = (
         ((mergedConfigWithoutLoadPaths.plugins or { }).load or { }).paths or [ ]
@@ -152,16 +150,16 @@ let
         ids = inst.runtimePlugins;
         existingLoadPaths = existingOpenClawPluginLoadPaths;
         denyList = existingDenyList;
-        nixOpenClawPluginIds = map (p: p.id) (plugins.openclawPluginsFor name);
+        nixOpenClawPluginIds = [ ];
       };
       disablePersistedPluginRegistry = runtimePluginConfig.loadPaths != [ ];
       generatedPluginConfig = lib.recursiveUpdate (lib.optionalAttrs
-        (runtimePluginConfig.loadPaths != [ ] || openclawPluginLoadPaths != [ ])
+        (runtimePluginConfig.loadPaths != [ ])
         {
           plugins = {
             load = {
               paths = lib.unique (
-                runtimePluginConfig.loadPaths ++ openclawPluginLoadPaths ++ existingOpenClawPluginLoadPaths
+                runtimePluginConfig.loadPaths ++ existingOpenClawPluginLoadPaths
               );
             };
           };

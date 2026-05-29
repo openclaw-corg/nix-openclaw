@@ -1,7 +1,0 @@
-{
-  "id": "runtime-test",
-  "name": "Runtime Test",
-  "activation": {
-    "onStartup": true
-  }
-}

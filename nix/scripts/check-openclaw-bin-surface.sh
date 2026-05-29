@@ -32,4 +32,9 @@ if ! grep -q 'PATH' "$openclaw_bin"; then
   exit 1
 fi
 
+if ! grep -q 'OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY' "$openclaw_bin"; then
+  echo "openclaw wrapper does not disable persisted plugin registry reads by default" >&2
+  exit 1
+fi
+
 echo "openclaw bin surface: ok"

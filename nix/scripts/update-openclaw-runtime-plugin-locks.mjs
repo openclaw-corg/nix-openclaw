@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import childProcess from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import https from "node:https";
 import os from "node:os";
@@ -11,37 +12,19 @@ const repoRoot = path.resolve(scriptDir, "../..");
 const sourceInfoPath = path.join(repoRoot, "nix/sources/openclaw-source.nix");
 const outputDir = path.join(repoRoot, "nix/generated/openclaw-runtime-plugins");
 const defaultOutputPath = path.join(outputDir, "default.nix");
+const reportOutputPath = path.join(outputDir, "report.json");
+const checkMode = process.argv.includes("--check");
 
-const curatedPlugins = [
-  {
-    id: "slack",
-    attrName: "slack",
-    packageName: "@openclaw/slack",
-    v1aClass: "bundled-dependencies",
-  },
-  {
-    id: "discord",
-    attrName: "discord",
-    packageName: "@openclaw/discord",
-    v1aClass: "bundled-dependencies",
-  },
-  {
-    id: "brave",
-    attrName: "brave",
-    packageName: "@openclaw/brave-plugin",
-    v1aClass: "no-runtime-dependencies",
-  },
-  {
-    id: "diagnostics-prometheus",
-    attrName: "diagnosticsPrometheus",
-    packageName: "@openclaw/diagnostics-prometheus",
-    v1aClass: "no-runtime-dependencies",
-  },
+const catalogFiles = [
+  "official-external-channel-catalog.json",
+  "official-external-plugin-catalog.json",
+  "official-external-provider-catalog.json",
 ];
 
 function run(command, args, options = {}) {
   const result = childProcess.spawnSync(command, args, {
     encoding: "utf8",
+    maxBuffer: 128 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
   });
@@ -86,13 +69,80 @@ function fetchJson(url) {
   });
 }
 
-function readReleaseVersion() {
+function readSourceField(field) {
   const sourceInfo = fs.readFileSync(sourceInfoPath, "utf8");
-  const match = sourceInfo.match(/releaseVersion = "([^"]+)";/);
+  const match = sourceInfo.match(new RegExp(`${field} = "([^"]+)";`));
   if (!match) {
-    throw new Error(`Could not read releaseVersion from ${sourceInfoPath}`);
+    throw new Error(`Could not read ${field} from ${sourceInfoPath}`);
   }
   return match[1];
+}
+
+function nixString(value) {
+  return JSON.stringify(value);
+}
+
+function nixAttrName(name) {
+  return /^[A-Za-z_][A-Za-z0-9_'-]*$/.test(name) ? name : nixString(name);
+}
+
+function toNix(value, indent = "") {
+  const nextIndent = `${indent}  `;
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return nixString(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return "[ ]";
+    }
+    return `[\n${value.map((item) => `${nextIndent}${toNix(item, nextIndent)}`).join("\n")}\n${indent}]`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      return "{ }";
+    }
+    return `{\n${entries
+      .map(([key, item]) => `${nextIndent}${nixAttrName(key)} = ${toNix(item, nextIndent)};`)
+      .join("\n")}\n${indent}}`;
+  }
+  throw new Error(`Unsupported Nix value: ${value}`);
+}
+
+function resolveOpenClawSourcePath() {
+  const strippedAttrs = [
+    "pnpmDepsHash",
+    "pnpmMajor",
+    "releaseTag",
+    "releaseVersion",
+    "applyPublicSurfaceHardlinksPatch",
+    "applySkipPluginAutoEnableNixModePatch",
+    "applyNixStorePluginOwnershipPatch",
+    "publicSurfaceHardlinksPatch",
+    "fsSafeSource",
+  ];
+  const expr = `
+    let
+      flake = builtins.getFlake (toString ${repoRoot});
+      pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
+      sourceInfo = import ${sourceInfoPath};
+      sourceFetch = builtins.removeAttrs sourceInfo ${toNix(strippedAttrs)};
+    in
+      toString (pkgs.fetchFromGitHub sourceFetch)
+  `;
+  return run("nix", [
+    "eval",
+    "--raw",
+    "--impure",
+    "--expr",
+    expr,
+  ]).trim();
 }
 
 function npmRegistryUrl(packageName) {
@@ -105,6 +155,194 @@ function pickDefined(object) {
 
 function sortedObject(object = {}) {
   return Object.fromEntries(Object.entries(object).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function stableJson(value) {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function optionalString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function parseVersion(value) {
+  const match = optionalString(value)?.match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  if (!match) {
+    return null;
+  }
+  return match.slice(1).map((part) => Number.parseInt(part, 10));
+}
+
+function compareVersions(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  if (!a || !b) {
+    return null;
+  }
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) {
+      return a[index] < b[index] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+function satisfiesVersionRange(version, range) {
+  const parts = optionalString(range)?.split(/\s+/).filter(Boolean) ?? [];
+  if (parts.length === 0) {
+    return true;
+  }
+  for (const part of parts) {
+    const match = part.match(/^(>=|>|<=|<|=)?(.+)$/);
+    if (!match) {
+      return false;
+    }
+    const operator = match[1] ?? "=";
+    const comparison = compareVersions(version, match[2]);
+    if (comparison === null) {
+      return false;
+    }
+    if (operator === ">=" && comparison < 0) return false;
+    if (operator === ">" && comparison <= 0) return false;
+    if (operator === "<=" && comparison > 0) return false;
+    if (operator === "<" && comparison >= 0) return false;
+    if (operator === "=" && comparison !== 0) return false;
+  }
+  return true;
+}
+
+function verifyIntegrity(filePath, integrity) {
+  const token = optionalString(integrity)
+    ?.split(/\s+/)
+    .find((entry) => /^(sha512|sha384|sha256)-/.test(entry));
+  if (!token) {
+    throw new Error(`Missing supported npm integrity for ${filePath}`);
+  }
+  const [algorithm, expected] = token.split("-", 2);
+  const actual = crypto.createHash(algorithm).update(fs.readFileSync(filePath)).digest("base64");
+  if (actual !== expected) {
+    throw new Error(`Downloaded tarball integrity mismatch for ${filePath}`);
+  }
+}
+
+function verifyShasum(filePath, shasum) {
+  if (!optionalString(shasum)) {
+    return;
+  }
+  const actual = crypto.createHash("sha1").update(fs.readFileSync(filePath)).digest("hex");
+  if (actual !== shasum) {
+    throw new Error(`Downloaded tarball shasum mismatch for ${filePath}`);
+  }
+}
+
+function parseCatalogEntries(raw) {
+  if (Array.isArray(raw)) {
+    return raw.filter(isRecord);
+  }
+  if (!isRecord(raw)) {
+    return [];
+  }
+  const list = raw.entries ?? raw.packages ?? raw.plugins;
+  return Array.isArray(list) ? list.filter(isRecord) : [];
+}
+
+function catalogManifest(entry) {
+  return isRecord(entry.openclaw) ? entry.openclaw : {};
+}
+
+function catalogPluginId(entry) {
+  const manifest = catalogManifest(entry);
+  return (
+    optionalString(manifest.plugin?.id)
+    ?? optionalString(manifest.channel?.id)
+    ?? optionalString(manifest.providers?.[0]?.id)
+  );
+}
+
+function catalogInstall(entry) {
+  const manifest = catalogManifest(entry);
+  const install = isRecord(manifest.install) ? manifest.install : {};
+  const npmSpec = optionalString(install.npmSpec) ?? optionalString(entry.name);
+  const clawhubSpec = optionalString(install.clawhubSpec);
+  const localPath = optionalString(install.localPath);
+  const defaultChoice =
+    ["npm", "clawhub", "local"].includes(install.defaultChoice)
+      ? install.defaultChoice
+      : npmSpec
+        ? "npm"
+        : clawhubSpec
+          ? "clawhub"
+          : localPath
+            ? "local"
+            : undefined;
+
+  if (!npmSpec && !clawhubSpec && !localPath) {
+    return null;
+  }
+
+  return pickDefined({
+    npmSpec,
+    clawhubSpec,
+    localPath,
+    defaultChoice,
+    minHostVersion: optionalString(install.minHostVersion),
+    expectedIntegrity: optionalString(install.expectedIntegrity),
+  });
+}
+
+function selectedSource(install) {
+  if (!install) {
+    return null;
+  }
+  return install.defaultChoice ?? (install.npmSpec ? "npm" : install.clawhubSpec ? "clawhub" : "local");
+}
+
+function parseNpmSpec(spec) {
+  const normalized = optionalString(spec)?.replace(/^npm:/, "");
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.startsWith("@")) {
+    const slashIndex = normalized.indexOf("/");
+    if (slashIndex === -1) {
+      return null;
+    }
+    const versionIndex = normalized.indexOf("@", slashIndex + 1);
+    if (versionIndex === -1) {
+      return { packageName: normalized, version: null };
+    }
+    return {
+      packageName: normalized.slice(0, versionIndex),
+      version: normalized.slice(versionIndex + 1) || null,
+    };
+  }
+
+  const versionIndex = normalized.lastIndexOf("@");
+  if (versionIndex <= 0) {
+    return { packageName: normalized, version: null };
+  }
+  return {
+    packageName: normalized.slice(0, versionIndex),
+    version: normalized.slice(versionIndex + 1) || null,
+  };
+}
+
+function isExactVersion(version) {
+  return /^[0-9]+(?:\.[0-9]+){1,2}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/.test(version);
+}
+
+function attrNameForId(id) {
+  const attrName = id
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((part, index) => (index === 0 ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`))
+    .join("");
+  return attrName.replace(/^[0-9]/, "_$&");
 }
 
 function shrinkwrapSummary(shrinkwrap) {
@@ -180,43 +418,6 @@ function validateTarMembers(tarball) {
   }
 }
 
-function nixString(value) {
-  return JSON.stringify(value);
-}
-
-function nixAttrName(name) {
-  return /^[A-Za-z_][A-Za-z0-9_'-]*$/.test(name) ? name : nixString(name);
-}
-
-function toNix(value, indent = "") {
-  const nextIndent = `${indent}  `;
-  if (value === null) {
-    return "null";
-  }
-  if (typeof value === "string") {
-    return nixString(value);
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) {
-      return "[ ]";
-    }
-    return `[\n${value.map((item) => `${nextIndent}${toNix(item, nextIndent)}`).join("\n")}\n${indent}]`;
-  }
-  if (typeof value === "object") {
-    const entries = Object.entries(value);
-    if (entries.length === 0) {
-      return "{ }";
-    }
-    return `{\n${entries
-      .map(([key, item]) => `${nextIndent}${nixAttrName(key)} = ${toNix(item, nextIndent)};`)
-      .join("\n")}\n${indent}}`;
-  }
-  throw new Error(`Unsupported Nix value: ${value}`);
-}
-
 function renderLock(lock) {
   return `# Generated by nix/scripts/update-openclaw-runtime-plugin-locks.mjs. Do not edit manually.\n${toNix(lock)}\n`;
 }
@@ -228,11 +429,158 @@ function renderDefault(locks) {
   return `# Generated by nix/scripts/update-openclaw-runtime-plugin-locks.mjs. Do not edit manually.\n{\n${entries}\n}\n`;
 }
 
-async function buildLock(plugin, releaseVersion) {
-  const packageMetadata = await fetchJson(npmRegistryUrl(plugin.packageName));
-  const versionMetadata = packageMetadata.versions?.[releaseVersion];
+function desiredGeneratedFiles(locks, report) {
+  return new Map([
+    ...locks.map((lock) => [
+      path.join(outputDir, `${lock.attrName}.nix`),
+      renderLock(lock),
+    ]),
+    [defaultOutputPath, renderDefault(locks)],
+    [reportOutputPath, stableJson(report)],
+  ]);
+}
+
+function existingGeneratedFiles() {
+  if (!fs.existsSync(outputDir)) {
+    return [];
+  }
+  return fs
+    .readdirSync(outputDir)
+    .filter((entry) => entry === "report.json" || entry.endsWith(".nix"))
+    .map((entry) => path.join(outputDir, entry));
+}
+
+function checkGeneratedFiles(desiredFiles) {
+  const staleFiles = existingGeneratedFiles().filter((file) => !desiredFiles.has(file));
+  const changedFiles = [];
+
+  for (const [file, content] of desiredFiles) {
+    if (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== content) {
+      changedFiles.push(file);
+    }
+  }
+
+  if (staleFiles.length === 0 && changedFiles.length === 0) {
+    return;
+  }
+
+  for (const file of changedFiles) {
+    console.error(`would update ${path.relative(repoRoot, file)}`);
+  }
+  for (const file of staleFiles) {
+    console.error(`would remove ${path.relative(repoRoot, file)}`);
+  }
+  process.exit(1);
+}
+
+function reportBase(row) {
+  return pickDefined({
+    id: row.id,
+    label: row.label,
+    kind: row.kind,
+    source: row.source,
+    catalogFile: row.catalogFile,
+    catalogEntryName: row.catalogEntryName,
+    catalogDefaultChoice: row.install?.defaultChoice,
+    selectedSource: row.selectedSource,
+    npmSpec: row.install?.npmSpec,
+    clawhubSpec: row.install?.clawhubSpec,
+    localPath: row.install?.localPath,
+    minHostVersion: row.install?.minHostVersion,
+    expectedIntegrity: row.install?.expectedIntegrity,
+  });
+}
+
+function skip(row, reason, detail) {
+  return {
+    ...reportBase(row),
+    status: "skipped",
+    reason,
+    ...(detail ? { detail } : {}),
+  };
+}
+
+function supportedReport(lock) {
+  return pickDefined({
+    id: lock.id,
+    status: "supported",
+    label: lock.label,
+    kind: lock.kind,
+    source: lock.catalogSource,
+    catalogFile: lock.catalogFile,
+    catalogEntryName: lock.catalogEntryName,
+    catalogDefaultChoice: lock.catalogDefaultChoice,
+    selectedSource: lock.selectedSource,
+    packageName: lock.packageName,
+    version: lock.version,
+    dependencyMode: lock.dependencyMode,
+    openclawCompat: lock.openclawCompat,
+    peerOpenClaw: lock.peerOpenClaw,
+  });
+}
+
+function readCatalogRows(openclawSourcePath) {
+  const rows = [];
+  for (const catalogFile of catalogFiles) {
+    const catalogPath = path.join(openclawSourcePath, "scripts/lib", catalogFile);
+    const raw = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+    for (const entry of parseCatalogEntries(raw)) {
+      const manifest = catalogManifest(entry);
+      const install = catalogInstall(entry);
+      const id = catalogPluginId(entry);
+      const label =
+        optionalString(manifest.plugin?.label)
+        ?? optionalString(manifest.channel?.label)
+        ?? optionalString(manifest.providers?.[0]?.name)
+        ?? optionalString(entry.name)
+        ?? id;
+
+      rows.push({
+        entry,
+        id,
+        label,
+        kind: optionalString(entry.kind) ?? "plugin",
+        source: optionalString(entry.source),
+        catalogFile,
+        catalogEntryName: optionalString(entry.name),
+        install,
+        selectedSource: selectedSource(install),
+      });
+    }
+  }
+  return rows;
+}
+
+async function buildNpmLock(row, npmPackage) {
+  const packageMetadata = await fetchJson(npmRegistryUrl(npmPackage.packageName));
+  const versionMetadata = packageMetadata.versions?.[npmPackage.version];
   if (!versionMetadata) {
-    throw new Error(`${plugin.packageName}@${releaseVersion} is not published`);
+    return {
+      skipped: skip(
+        row,
+        npmPackage.packageName.startsWith("@openclaw/")
+          ? "missing-pinned-artifact"
+          : "missing-catalog-pinned-artifact",
+        `${npmPackage.packageName}@${npmPackage.version} is not published`,
+      ),
+    };
+  }
+
+  if (row.install?.expectedIntegrity && versionMetadata.dist?.integrity !== row.install.expectedIntegrity) {
+    return {
+      skipped: skip(
+        row,
+        "npm-integrity-mismatch",
+        `catalog expected ${row.install.expectedIntegrity}; npm returned ${versionMetadata.dist?.integrity ?? "missing"}`,
+      ),
+    };
+  }
+
+  if (!versionMetadata.dist?.tarball) {
+    return { skipped: skip(row, "missing-npm-tarball", `${npmPackage.packageName}@${npmPackage.version}`) };
+  }
+  if (!versionMetadata.dist?.integrity) {
+    return { skipped: skip(row, "missing-npm-integrity", `${npmPackage.packageName}@${npmPackage.version}`) };
   }
 
   const prefetch = JSON.parse(
@@ -243,6 +591,8 @@ async function buildLock(plugin, releaseVersion) {
       versionMetadata.dist.tarball,
     ]),
   );
+  verifyIntegrity(prefetch.storePath, versionMetadata.dist.integrity);
+  verifyShasum(prefetch.storePath, versionMetadata.dist.shasum);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-runtime-plugin-lock-"));
   try {
@@ -255,8 +605,16 @@ async function buildLock(plugin, releaseVersion) {
     ]);
 
     const packageRoot = path.join(tmpDir, "package");
-    const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
-    const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "openclaw.plugin.json"), "utf8"));
+    const packageJsonPath = path.join(packageRoot, "package.json");
+    const manifestPath = path.join(packageRoot, "openclaw.plugin.json");
+    if (!fs.existsSync(packageJsonPath) || !fs.existsSync(manifestPath)) {
+      return {
+        skipped: skip(row, "not-native-runtime-plugin", "package lacks package.json or openclaw.plugin.json"),
+      };
+    }
+
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     const shrinkwrapPath = path.join(packageRoot, "npm-shrinkwrap.json");
     const shrinkwrap = fs.existsSync(shrinkwrapPath)
       ? JSON.parse(fs.readFileSync(shrinkwrapPath, "utf8"))
@@ -264,62 +622,258 @@ async function buildLock(plugin, releaseVersion) {
     const shrinkwrapPackages = shrinkwrapSummary(shrinkwrap);
     const bundledPackageRoots = collectPackageRoots(path.join(packageRoot, "node_modules"));
 
-    if (packageJson.name !== plugin.packageName) {
-      throw new Error(`${plugin.packageName}: package.json name mismatch`);
+    if (packageJson.name !== npmPackage.packageName) {
+      return { skipped: skip(row, "package-name-mismatch", `package.json name is ${packageJson.name}`) };
     }
-    if (packageJson.version !== releaseVersion) {
-      throw new Error(`${plugin.packageName}: package.json version mismatch`);
+    if (packageJson.version !== npmPackage.version) {
+      return { skipped: skip(row, "package-version-mismatch", `package.json version is ${packageJson.version}`) };
     }
-    if (manifest.id !== plugin.id) {
-      throw new Error(`${plugin.packageName}: openclaw.plugin.json id mismatch`);
+    if (manifest.id !== row.id) {
+      return { skipped: skip(row, "manifest-id-mismatch", `openclaw.plugin.json id is ${manifest.id}`) };
+    }
+
+    const openclawCompat = packageJson.openclaw?.compat?.pluginApi ?? "";
+    const peerOpenClaw = packageJson.peerDependencies?.openclaw ?? "";
+    const compatibilityRanges = [
+      ["catalog minHostVersion", row.install?.minHostVersion ?? ""],
+      ["openclaw.compat.pluginApi", openclawCompat],
+      ["peerDependencies.openclaw", peerOpenClaw],
+    ];
+    if (!openclawCompat || !peerOpenClaw) {
+      return {
+        skipped: skip(row, "missing-host-compatibility", "package must declare openclaw.compat.pluginApi and peerDependencies.openclaw"),
+      };
+    }
+    for (const [name, range] of compatibilityRanges) {
+      if (range && !satisfiesVersionRange(releaseVersion, range)) {
+        return {
+          skipped: skip(row, "host-compatibility-mismatch", `${name} ${range} does not include OpenClaw ${releaseVersion}`),
+        };
+      }
+    }
+
+    const runtimeEntries = [
+      ...(packageJson.openclaw?.runtimeExtensions ?? []),
+      ...(packageJson.openclaw?.runtimeSetupEntry ? [packageJson.openclaw.runtimeSetupEntry] : []),
+    ];
+    if (runtimeEntries.length === 0) {
+      return { skipped: skip(row, "missing-runtime-entry", "package has no OpenClaw runtime entry") };
     }
 
     for (const bundledRoot of bundledPackageRoots) {
       if (!shrinkwrapPackages[bundledRoot]) {
-        throw new Error(`${plugin.packageName}: bundled dependency ${bundledRoot} missing from shrinkwrap`);
+        return {
+          skipped: skip(
+            row,
+            "bundled-dependency-missing-from-shrinkwrap",
+            `bundled dependency ${bundledRoot} is not in npm-shrinkwrap.json`,
+          ),
+        };
       }
     }
 
-    return {
-      id: plugin.id,
-      attrName: plugin.attrName,
-      packageName: plugin.packageName,
-      version: releaseVersion,
+    const dependencies = sortedObject(packageJson.dependencies ?? versionMetadata.dependencies ?? {});
+    const optionalDependencies = sortedObject(
+      packageJson.optionalDependencies ?? versionMetadata.optionalDependencies ?? {},
+    );
+    const hasRuntimeDependencies =
+      Object.keys(dependencies).length > 0 || Object.keys(optionalDependencies).length > 0;
+
+    if (hasRuntimeDependencies && !shrinkwrap) {
+      return {
+        skipped: skip(
+          row,
+          "runtime-dependencies-without-shrinkwrap",
+          "package has runtime dependencies but no npm-shrinkwrap.json",
+        ),
+      };
+    }
+
+    if (hasRuntimeDependencies && bundledPackageRoots.length === 0) {
+      return {
+        skipped: skip(
+          row,
+          "dependency-materialization-required",
+          "package has runtime dependencies but no bundled node_modules",
+        ),
+      };
+    }
+
+    if (!hasRuntimeDependencies && bundledPackageRoots.length > 0) {
+      return {
+        skipped: skip(
+          row,
+          "unexpected-bundled-dependencies",
+          "package bundles node_modules but declares no runtime dependencies",
+        ),
+      };
+    }
+
+    const lock = {
+      id: row.id,
+      attrName: attrNameForId(row.id),
+      label: row.label,
+      kind: row.kind,
+      catalogSource: row.source,
+      catalogFile: row.catalogFile,
+      catalogEntryName: row.catalogEntryName,
+      catalogDefaultChoice: row.install?.defaultChoice ?? null,
+      selectedSource: "npm",
+      npmSpec: row.install?.npmSpec,
+      minHostVersion: row.install?.minHostVersion ?? "",
+      expectedIntegrity: row.install?.expectedIntegrity ?? "",
+      packageName: npmPackage.packageName,
+      version: npmPackage.version,
       tarballUrl: versionMetadata.dist.tarball,
       npmIntegrity: versionMetadata.dist.integrity,
       npmShasum: versionMetadata.dist.shasum,
       nixHash: prefetch.hash,
-      v1aClass: plugin.v1aClass,
+      dependencyMode: hasRuntimeDependencies ? "bundled" : "none",
       manifestId: manifest.id,
-      openclawCompat: packageJson.openclaw?.compat?.pluginApi ?? "",
-      peerOpenClaw: packageJson.peerDependencies?.openclaw ?? "",
+      openclawCompat,
+      peerOpenClaw,
       runtimeExtensions: packageJson.openclaw?.runtimeExtensions ?? [],
       runtimeSetupEntry: packageJson.openclaw?.runtimeSetupEntry ?? null,
       channels: manifest.channels ?? [],
       contracts: manifest.contracts ?? {},
-      dependencies: sortedObject(packageJson.dependencies ?? versionMetadata.dependencies ?? {}),
-      optionalDependencies: sortedObject(
-        packageJson.optionalDependencies ?? versionMetadata.optionalDependencies ?? {},
-      ),
+      dependencies,
+      optionalDependencies,
       bundleDependencies: [
         ...(versionMetadata.bundleDependencies ?? versionMetadata.bundledDependencies ?? []),
       ].sort(),
       bundledPackageRoots,
     };
+
+    return { lock, supported: supportedReport(lock) };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 
-const releaseVersion = readReleaseVersion();
-const locks = [];
-for (const plugin of curatedPlugins) {
-  locks.push(await buildLock(plugin, releaseVersion));
+async function processRow(row, releaseVersion) {
+  if (!row.id) {
+    return { skipped: skip(row, "missing-plugin-id", "catalog row has no plugin, channel, or provider id") };
+  }
+  if (!row.install) {
+    return { skipped: skip(row, "missing-install-metadata", "catalog row has no install metadata") };
+  }
+  if (row.source !== "official") {
+    return {
+      skipped: skip(
+        row,
+        "external-catalog-source-unsupported",
+        "non-OpenClaw catalog packages need an explicit trust and dependency policy",
+      ),
+    };
+  }
+  if (row.selectedSource === "clawhub") {
+    return {
+      skipped: skip(row, "clawhub-adapter-required", "catalog-selected ClawHub artifacts are not implemented yet"),
+    };
+  }
+  if (row.selectedSource === "local") {
+    return { skipped: skip(row, "local-source-unsupported", "catalog-selected local paths are not reproducible Nix artifacts") };
+  }
+  if (row.selectedSource !== "npm") {
+    return { skipped: skip(row, "unsupported-selected-source", `selected source is ${row.selectedSource ?? "missing"}`) };
+  }
+
+  const npmPackage = parseNpmSpec(row.install.npmSpec);
+  if (!npmPackage) {
+    return { skipped: skip(row, "invalid-npm-spec", row.install.npmSpec ?? "") };
+  }
+  if (!npmPackage.packageName.startsWith("@openclaw/")) {
+    return {
+      skipped: skip(
+        row,
+        "non-openclaw-package-unsupported",
+        "official catalog support is currently limited to OpenClaw-owned @openclaw/* packages",
+      ),
+    };
+  }
+
+  if (!npmPackage.version) {
+    npmPackage.version = releaseVersion;
+  }
+
+  if (!isExactVersion(npmPackage.version)) {
+    return {
+      skipped: skip(row, "exact-version-required", `npm version ${npmPackage.version} is not an exact version`),
+    };
+  }
+
+  return buildNpmLock(row, npmPackage);
 }
 
-fs.mkdirSync(outputDir, { recursive: true });
-for (const lock of locks) {
-  fs.writeFileSync(path.join(outputDir, `${lock.attrName}.nix`), renderLock(lock));
+const releaseVersion = readSourceField("releaseVersion");
+const releaseTag = readSourceField("releaseTag");
+const pinnedRev = readSourceField("rev");
+const pinnedHash = readSourceField("hash");
+const openclawSourcePath = resolveOpenClawSourcePath();
+const rows = readCatalogRows(openclawSourcePath);
+const locks = [];
+const supported = [];
+const skipped = [];
+const seenCatalogKeys = new Set();
+
+for (const row of rows) {
+  const dedupeKey = `${row.kind}:${row.id ?? row.catalogEntryName ?? ""}`;
+  if (seenCatalogKeys.has(dedupeKey)) {
+    skipped.push(skip(row, "duplicate-catalog-row", `duplicate catalog key ${dedupeKey}`));
+    continue;
+  }
+  seenCatalogKeys.add(dedupeKey);
+
+  const result = await processRow(row, releaseVersion);
+  if (result.lock) {
+    locks.push(result.lock);
+    supported.push(result.supported);
+  } else if (result.skipped) {
+    skipped.push(result.skipped);
+  } else {
+    throw new Error(`No lock or skip result for ${row.id ?? row.catalogEntryName}`);
+  }
 }
-fs.writeFileSync(defaultOutputPath, renderDefault(locks));
-console.log(`wrote ${path.relative(repoRoot, outputDir)} for OpenClaw ${releaseVersion}`);
+
+locks.sort((a, b) => a.id.localeCompare(b.id));
+supported.sort((a, b) => a.id.localeCompare(b.id));
+skipped.sort((a, b) =>
+  `${a.catalogFile}:${a.id ?? a.catalogEntryName ?? ""}`.localeCompare(
+    `${b.catalogFile}:${b.id ?? b.catalogEntryName ?? ""}`,
+  ),
+);
+
+fs.mkdirSync(outputDir, { recursive: true });
+
+const report = {
+  openclawVersion: releaseVersion,
+  openclawReleaseTag: releaseTag,
+  openclawRev: pinnedRev,
+  openclawHash: pinnedHash,
+  catalogFiles,
+  supported,
+  skipped,
+};
+const desiredFiles = desiredGeneratedFiles(locks, report);
+
+if (checkMode) {
+  checkGeneratedFiles(desiredFiles);
+  console.log(
+    `${path.relative(repoRoot, outputDir)} is up to date for OpenClaw ${releaseVersion}: ${supported.length} supported, ${skipped.length} skipped`,
+  );
+  process.exit(0);
+}
+
+for (const file of existingGeneratedFiles()) {
+  if (!desiredFiles.has(file)) {
+    fs.rmSync(file);
+  }
+}
+
+for (const [file, content] of desiredFiles) {
+  fs.writeFileSync(file, content);
+}
+
+console.log(
+  `wrote ${path.relative(repoRoot, outputDir)} for OpenClaw ${releaseVersion}: ${supported.length} supported, ${skipped.length} skipped`,
+);

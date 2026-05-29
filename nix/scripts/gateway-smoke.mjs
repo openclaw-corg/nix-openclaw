@@ -8,6 +8,8 @@ import { once } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
 
 const gatewayPackage = process.env.OPENCLAW_GATEWAY;
+const runtimePluginSmokeRoot = process.env.OPENCLAW_RUNTIME_PLUGIN_SMOKE_ROOT;
+const runtimePluginSmokeId = process.env.OPENCLAW_RUNTIME_PLUGIN_SMOKE_ID ?? "diagnostics-prometheus";
 
 if (!gatewayPackage) {
   console.error("OPENCLAW_GATEWAY is not set");
@@ -102,6 +104,32 @@ try {
   }
 
   const port = await freePort();
+  if (runtimePluginSmokeRoot) {
+    fs.mkdirSync(path.join(env.OPENCLAW_STATE_DIR, "plugins"), { recursive: true });
+    fs.writeFileSync(path.join(env.OPENCLAW_STATE_DIR, "plugins", "installs.json"), "{ stale registry json");
+    fs.writeFileSync(
+      env.OPENCLAW_CONFIG_PATH,
+      JSON.stringify(
+        {
+          gateway: {
+            mode: "local",
+            port,
+          },
+          plugins: {
+            load: {
+              paths: [runtimePluginSmokeRoot],
+            },
+            entries: {
+              [runtimePluginSmokeId]: { enabled: true },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
   gateway = spawn(
     openclaw,
     [
@@ -168,6 +196,14 @@ try {
       }
 
       if (parsed?.ok === true) {
+        if (runtimePluginSmokeRoot) {
+          const loadedPlugins = parsed.plugins?.loaded ?? [];
+          if (!loadedPlugins.includes(runtimePluginSmokeId)) {
+            throw new Error(
+              `gateway health did not report Nix-managed ${runtimePluginSmokeId} loaded: ${JSON.stringify(parsed.plugins ?? {})}`,
+            );
+          }
+        }
         console.log(`openclaw gateway smoke: ok (${version.stdout.trim()})`);
         gatewayHealthy = true;
         break;

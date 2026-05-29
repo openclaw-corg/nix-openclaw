@@ -84,6 +84,15 @@ let
                     groupPolicy = "disabled";
                     allowFrom = [ "*" ];
                   };
+                  channels.slack = {
+                    enabled = true;
+                    appToken.source = "env";
+                    appToken.provider = "env";
+                    appToken.id = "SLACK_APP_TOKEN";
+                    botToken.source = "env";
+                    botToken.provider = "env";
+                    botToken.id = "SLACK_BOT_TOKEN";
+                  };
                 };
               };
             };

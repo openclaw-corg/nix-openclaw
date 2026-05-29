@@ -29,9 +29,9 @@ fi
 mkdir -p "$out/bin"
 
 if [ -n "${OPENCLAW_TOOLS_PATH:-}" ]; then
-  bash -e -c '. "$STDENV_SETUP"; makeWrapper "$OPENCLAW_GATEWAY_BIN" "$out/bin/openclaw" --set OPENCLAW_PINNED_WRITE_PYTHON "$OPENCLAW_PINNED_WRITE_PYTHON" --prefix PATH : "$OPENCLAW_TOOLS_PATH"'
+  bash -e -c '. "$STDENV_SETUP"; makeWrapper "$OPENCLAW_GATEWAY_BIN" "$out/bin/openclaw" --set OPENCLAW_PINNED_WRITE_PYTHON "$OPENCLAW_PINNED_WRITE_PYTHON" --set-default OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY "1" --prefix PATH : "$OPENCLAW_TOOLS_PATH"'
 else
-  bash -e -c '. "$STDENV_SETUP"; makeWrapper "$OPENCLAW_GATEWAY_BIN" "$out/bin/openclaw" --set OPENCLAW_PINNED_WRITE_PYTHON "$OPENCLAW_PINNED_WRITE_PYTHON"'
+  bash -e -c '. "$STDENV_SETUP"; makeWrapper "$OPENCLAW_GATEWAY_BIN" "$out/bin/openclaw" --set OPENCLAW_PINNED_WRITE_PYTHON "$OPENCLAW_PINNED_WRITE_PYTHON" --set-default OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY "1"'
 fi
 
 if [ -n "${OPENCLAW_APP_PACKAGE:-}" ]; then

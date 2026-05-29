@@ -1,5 +1,6 @@
 {
   lib,
+  pkgs,
   stdenv,
   nodejs_22,
   openclawGateway,
@@ -17,6 +18,8 @@ stdenv.mkDerivation {
 
   env = {
     OPENCLAW_GATEWAY = openclawGateway;
+    OPENCLAW_RUNTIME_PLUGIN_SMOKE_ID = "diagnostics-prometheus";
+    OPENCLAW_RUNTIME_PLUGIN_SMOKE_ROOT = "${pkgs.openclawRuntimePlugins.diagnostics-prometheus}";
   };
 
   __darwinAllowLocalNetworking = true;

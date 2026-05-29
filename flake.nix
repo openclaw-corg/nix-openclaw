@@ -77,6 +77,9 @@
           openclawToolPkgs = openclawToolPkgs;
           inherit qmdPackage;
         };
+        runtimePluginPackageOutputs = pkgs.lib.mapAttrs' (
+          id: package: pkgs.lib.nameValuePair "openclaw-runtime-plugin-${id}" package
+        ) packageSetStable.openclawRuntimePlugins;
       in
       {
         formatter = pkgs.nixfmt-tree.override {
@@ -92,13 +95,7 @@
             openclaw-dogfood = packageSetDogfood.openclaw;
             openclaw-gateway-dogfood = packageSetDogfood.openclaw-gateway;
           }
-          // (builtins.mapAttrs (name: package: package) {
-            openclaw-runtime-plugin-slack = packageSetStable.openclawRuntimePlugins.slack;
-            openclaw-runtime-plugin-discord = packageSetStable.openclawRuntimePlugins.discord;
-            openclaw-runtime-plugin-brave = packageSetStable.openclawRuntimePlugins.brave;
-            openclaw-runtime-plugin-diagnostics-prometheus =
-              packageSetStable.openclawRuntimePlugins."diagnostics-prometheus";
-          });
+          // runtimePluginPackageOutputs;
 
         apps = {
           openclaw = flake-utils.lib.mkApp { drv = packageSetStable.openclaw; };
@@ -118,6 +115,7 @@
                 openclawGateway = packageSetDogfood.openclaw-gateway;
               };
               default-instance = pkgs.callPackage ./nix/checks/openclaw-default-instance.nix { };
+              runtime-plugin-locks = pkgs.callPackage ./nix/checks/openclaw-runtime-plugin-locks.nix { };
               workspace-materializer = pkgs.callPackage ./nix/checks/openclaw-workspace-materializer.nix { };
               config-validity = pkgs.callPackage ./nix/checks/openclaw-config-validity.nix {
                 openclawGateway = packageSetStable.openclaw-gateway;

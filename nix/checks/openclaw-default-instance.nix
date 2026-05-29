@@ -33,10 +33,9 @@ let
   betaPluginSource =
     lockedPathFlake "openclaw-test-plugin-beta" ../tests/plugins/beta
       "sha256-lDKtQKHZHqOkOprjLZzBEu8cFJhAdyEzsays9hdVeqE=";
-  runtimePluginSource =
+  runtimePluginRootSource =
     lockedPathFlake "openclaw-test-plugin-runtime" ../tests/plugins/runtime
-      "sha256-Ytei4j076EQ5rcpoiMt4BhSGUMtlU5kohQ+CCfKwxEE=";
-
+      "sha256-S/N5zWbObP8YpB89B8WylYzWORbw5roz9kFApJAbUOU=";
   stubModule =
     { lib, ... }:
     {
@@ -421,85 +420,14 @@ let
           throw "runtimePackages did not wire the Codex runtime profile activation."
       );
 
-  openclawPluginEval = moduleEval {
+  customRuntimePluginRootEval = moduleEval {
     customPlugins = [
-      { source = runtimePluginSource; }
-    ];
-    config.plugins.load.paths = [
-      "/tmp/user-openclaw-plugin"
+      { source = runtimePluginRootSource; }
     ];
   };
-  openclawPluginConfig = builtins.fromJSON (
-    builtins.unsafeDiscardStringContext
-      openclawPluginEval.config.home.file.".openclaw/openclaw.json".text
-  );
-  openclawPluginLoadPaths = ((openclawPluginConfig.plugins or { }).load or { }).paths or [ ];
-  openclawPluginEntry = ((openclawPluginConfig.plugins or { }).entries or { }).runtime-test or { };
-  openclawPluginDisabledEntry =
-    ((openclawPluginConfig.plugins or { }).entries or { }).runtime-disabled or null;
-  openclawPluginCheck =
-    builtins.deepSeq (requireNoAssertionFailures "OpenClaw plugin load" openclawPluginEval)
-      (
-        if !(lib.any (path: lib.hasSuffix "/plugin" path) openclawPluginLoadPaths) then
-          throw "OpenClaw plugin root was not added to plugins.load.paths."
-        else if !(lib.any (path: lib.hasSuffix "/disabled-plugin" path) openclawPluginLoadPaths) then
-          throw "OpenClaw plugin root with enabled=false was not added to plugins.load.paths."
-        else if !(lib.elem "/tmp/user-openclaw-plugin" openclawPluginLoadPaths) then
-          throw "User-defined plugins.load.paths entry was not preserved."
-        else if (openclawPluginEntry.enabled or false) != true then
-          throw "OpenClaw plugin entry default was not enabled."
-        else if (openclawPluginDisabledEntry.enabled or null) != false then
-          throw "OpenClaw plugin entry with enabled=false did not render a disabled default."
-        else
-          "ok"
-      );
-
-  openclawPluginOverrideEval = moduleEval {
-    customPlugins = [
-      { source = runtimePluginSource; }
-    ];
-    config.plugins.entries.runtime-test.enabled = false;
-  };
-  openclawPluginOverrideConfig = builtins.fromJSON (
-    builtins.unsafeDiscardStringContext
-      openclawPluginOverrideEval.config.home.file.".openclaw/openclaw.json".text
-  );
-  openclawPluginOverrideEntry =
-    ((openclawPluginOverrideConfig.plugins or { }).entries or { }).runtime-test or { };
-  openclawPluginOverrideDisabledEntry =
-    ((openclawPluginOverrideConfig.plugins or { }).entries or { }).runtime-disabled or { };
-  openclawPluginOverrideCheck =
-    builtins.deepSeq (requireNoAssertionFailures "OpenClaw plugin override" openclawPluginOverrideEval)
-      (
-        if (openclawPluginOverrideEntry.enabled or null) != false then
-          throw "User config could not override OpenClaw plugin enabled default."
-        else if (openclawPluginOverrideDisabledEntry.enabled or null) != false then
-          throw "Plugin enabled=false default did not survive when not overridden."
-        else
-          "ok"
-      );
-
-  openclawPluginEnableOverrideEval = moduleEval {
-    customPlugins = [
-      { source = runtimePluginSource; }
-    ];
-    config.plugins.entries.runtime-disabled.enabled = true;
-  };
-  openclawPluginEnableOverrideConfig = builtins.fromJSON (
-    builtins.unsafeDiscardStringContext
-      openclawPluginEnableOverrideEval.config.home.file.".openclaw/openclaw.json".text
-  );
-  openclawPluginEnableOverrideEntry =
-    ((openclawPluginEnableOverrideConfig.plugins or { }).entries or { }).runtime-disabled or { };
-  openclawPluginEnableOverrideCheck =
-    builtins.deepSeq
-      (requireNoAssertionFailures "OpenClaw plugin enable override" openclawPluginEnableOverrideEval)
-      (
-        if (openclawPluginEnableOverrideEntry.enabled or null) == true then
-          "ok"
-        else
-          throw "User config could not override OpenClaw plugin enabled=false default."
-      );
+  customRuntimePluginRootCheck =
+    requireEvalFailure "customPlugins rejects OpenClaw runtime plugin roots"
+      customRuntimePluginRootEval.config.home.file;
 
   runtimePluginEval = moduleEval {
     runtimePlugins = [ "slack" ];
@@ -548,6 +476,43 @@ let
           && !(lib.elem "OPENCLAW_DISABLE_PERSISTED_PLUGIN_REGISTRY=1" runtimePluginSystemdEnv)
         then
           throw "runtimePlugins did not disable persisted plugin registry reads for systemd."
+        else
+          "ok"
+      );
+
+  runtimePluginCatalogGeneratedEval = moduleEval {
+    runtimePlugins = [
+      "amazon-bedrock"
+      "feishu"
+    ];
+  };
+  runtimePluginCatalogGeneratedConfig = builtins.fromJSON (
+    builtins.unsafeDiscardStringContext
+      runtimePluginCatalogGeneratedEval.config.home.file.".openclaw/openclaw.json".text
+  );
+  runtimePluginCatalogGeneratedLoadPaths =
+    ((runtimePluginCatalogGeneratedConfig.plugins or { }).load or { }).paths or [ ];
+  runtimePluginCatalogGeneratedEntries =
+    ((runtimePluginCatalogGeneratedConfig.plugins or { }).entries or { });
+  runtimePluginCatalogGeneratedCheck =
+    builtins.deepSeq (requireNoAssertionFailures "runtimePlugins generated catalog ids" runtimePluginCatalogGeneratedEval)
+      (
+        if
+          !(lib.any (
+            path: lib.hasInfix "openclaw-runtime-plugin-amazon-bedrock" path
+          ) runtimePluginCatalogGeneratedLoadPaths)
+        then
+          throw "runtimePlugins did not accept generated provider plugin ids."
+        else if
+          !(lib.any (
+            path: lib.hasInfix "openclaw-runtime-plugin-feishu" path
+          ) runtimePluginCatalogGeneratedLoadPaths)
+        then
+          throw "runtimePlugins did not accept generated channel plugin ids."
+        else if ((runtimePluginCatalogGeneratedEntries.amazon-bedrock or { }).enabled or false) != true then
+          throw "runtimePlugins did not enable generated provider plugin entry."
+        else if ((runtimePluginCatalogGeneratedEntries.feishu or { }).enabled or false) != true then
+          throw "runtimePlugins did not enable generated channel plugin entry."
         else
           "ok"
       );
@@ -608,7 +573,7 @@ let
   };
   runtimePluginUnsupportedCheck =
     requireAssertionFailure "unsupported runtimePlugins"
-      "runtimePlugins contains unsupported ids: codex"
+      "Maintainers can inspect skipped-catalog diagnostics in nix/generated/openclaw-runtime-plugins/report.json"
       runtimePluginUnsupportedEval;
 
   runtimePluginRawLoadPathEval = moduleEval {
@@ -675,10 +640,9 @@ let
     qmdPrewarmCheck
     qmdMemoryCheck
     runtimeProfileCheck
-    openclawPluginCheck
-    openclawPluginOverrideCheck
-    openclawPluginEnableOverrideCheck
+    customRuntimePluginRootCheck
     runtimePluginCheck
+    runtimePluginCatalogGeneratedCheck
     runtimePluginInstanceCheck
     runtimePluginDuplicateCheck
     runtimePluginUnsupportedCheck

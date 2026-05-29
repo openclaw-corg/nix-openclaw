@@ -9,28 +9,6 @@ let
   resolvePath = openclawLib.resolvePath;
   toRelative = openclawLib.toRelative;
 
-  normalizeOpenClawPlugin =
-    pluginSource: name: entry:
-    let
-      id = entry.id or (throw "openclawPlugin ${name}: plugins entry missing id");
-      path = entry.path or (throw "openclawPlugin ${name}: plugins.${id} missing path");
-      enabled =
-        if entry ? enable && !(entry ? enabled) then
-          throw "openclawPlugin ${name}: plugins.${id}.enable is not supported; use enabled"
-        else if entry ? enabled then
-          if builtins.isBool entry.enabled then
-            entry.enabled
-          else
-            throw "openclawPlugin ${name}: plugins.${id}.enabled must be a boolean"
-        else
-          true;
-    in
-    {
-      inherit id path enabled;
-      source = pluginSource;
-      plugin = name;
-    };
-
   resolveFlakePlugin =
     plugin:
     let
@@ -59,24 +37,28 @@ let
           openclawPlugin;
       name = resolvedPlugin.name or (throw "openclawPlugin.name missing in ${plugin.source}");
       needs = resolvedPlugin.needs or { };
+      _noRuntimePlugins =
+        if resolvedPlugin ? plugins then
+          throw "openclawPlugin.plugins is not supported in ${plugin.source}; OpenClaw runtime plugins use programs.openclaw.runtimePlugins with supported catalog ids"
+        else
+          null;
     in
-    builtins.seq _ {
+    builtins.seq _ (builtins.seq _noRuntimePlugins {
       source = plugin.source;
       inherit name;
       skills = resolvedPlugin.skills or [ ];
       packages = resolvedPlugin.packages or [ ];
-      plugins = map (normalizeOpenClawPlugin plugin.source name) (resolvedPlugin.plugins or [ ]);
       needs = {
         stateDirs = needs.stateDirs or [ ];
         requiredEnv = needs.requiredEnv or [ ];
       };
       config = plugin.config or { };
-    };
+    });
 
   resolvePlugin =
     plugin:
     if lib.hasPrefix "npm:" plugin.source then
-      throw "customPlugins.source = \"${plugin.source}\" is not supported for OpenClaw npm runtime plugins. Use programs.openclaw.runtimePlugins with a curated plugin id instead."
+      throw "customPlugins.source = \"${plugin.source}\" is not supported for OpenClaw npm runtime plugins. Use programs.openclaw.runtimePlugins with a supported OpenClaw catalog id instead."
     else
       resolveFlakePlugin plugin;
 
@@ -144,45 +126,8 @@ let
     in
     lib.flatten (map toPairs entries);
 
-  openclawPluginsFor =
-    instName: lib.flatten (map (p: p.plugins) (resolvedPluginsByInstance.${instName} or [ ]));
-
-  openclawPluginLoadPathsFor = instName: map (p: toString p.path) (openclawPluginsFor instName);
-
-  openclawPluginEntriesConfigFor =
-    instName:
-    let
-      entries = openclawPluginsFor instName;
-    in
-    lib.optionalAttrs (entries != [ ]) {
-      plugins = {
-        entries = lib.listToAttrs (
-          map (p: {
-            name = p.id;
-            value = {
-              enabled = p.enabled;
-            };
-          }) entries
-        );
-      };
-    };
-
-  openclawPluginIdAssertions = lib.mapAttrsToList (
-    instName: _inst:
-    let
-      ids = map (p: p.id) (openclawPluginsFor instName);
-      counts = lib.foldl' (acc: id: acc // { "${id}" = (acc.${id} or 0) + 1; }) { } ids;
-      duplicates = lib.attrNames (lib.filterAttrs (_: v: v > 1) counts);
-    in
-    {
-      assertion = duplicates == [ ];
-      message = "programs.openclaw.instances.${instName}: duplicate OpenClaw plugin ids detected: ${lib.concatStringsSep ", " duplicates}";
-    }
-  ) enabledInstances;
-
   pluginAssertions =
-    openclawPluginIdAssertions
-    ++ lib.flatten (
+    lib.flatten (
       lib.mapAttrsToList (
         instName: inst:
         let
@@ -270,9 +215,6 @@ in
     pluginStateDirsAll
     pluginEnvFor
     pluginEnvAllFor
-    openclawPluginsFor
-    openclawPluginLoadPathsFor
-    openclawPluginEntriesConfigFor
     pluginAssertions
     pluginConfigFiles
     pluginGuards
