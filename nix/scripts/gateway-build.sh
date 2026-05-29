@@ -127,7 +127,7 @@ fi
 tsdown_max_old_space_mb="${OPENCLAW_NIX_TSDOWN_MAX_OLD_SPACE_MB:-}"
 if [ -z "$tsdown_max_old_space_mb" ]; then
   case "$(uname -s)" in
-    Darwin) tsdown_max_old_space_mb=2048 ;;
+    Darwin) tsdown_max_old_space_mb=1024 ;;
     *) tsdown_max_old_space_mb=8192 ;;
   esac
 fi
