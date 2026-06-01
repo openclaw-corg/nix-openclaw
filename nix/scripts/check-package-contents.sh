@@ -32,7 +32,9 @@ require_path "${root}/docs/reference/templates"
 require_path "${root}/docs/reference/templates/AGENTS.md"
 require_path "${root}/docs/reference/templates/SOUL.md"
 require_path "${root}/docs/reference/templates/TOOLS.md"
-require_path "${root}/src/agents/templates/HEARTBEAT.md"
+if [ "${OPENCLAW_REQUIRE_AGENT_WORKSPACE_TEMPLATES:-1}" = "1" ]; then
+  require_path "${root}/src/agents/templates/HEARTBEAT.md"
+fi
 require_path "${root}/skills"
 require_path "${root}/node_modules/hasown"
 require_path "${root}/node_modules/combined-stream"

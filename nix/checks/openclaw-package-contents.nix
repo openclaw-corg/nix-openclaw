@@ -3,6 +3,7 @@
   stdenv,
   nodejs_22,
   openclawGateway,
+  requireAgentWorkspaceTemplates ? true,
 }:
 
 stdenv.mkDerivation {
@@ -15,6 +16,9 @@ stdenv.mkDerivation {
 
   env = {
     OPENCLAW_GATEWAY = openclawGateway;
+  }
+  // lib.optionalAttrs (!requireAgentWorkspaceTemplates) {
+    OPENCLAW_REQUIRE_AGENT_WORKSPACE_TEMPLATES = "0";
   };
 
   doCheck = true;
