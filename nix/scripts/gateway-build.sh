@@ -138,6 +138,13 @@ case "$tsdown_node_options" in
   *) tsdown_node_options="${tsdown_node_options:+$tsdown_node_options }--max-old-space-size=$tsdown_max_old_space_mb" ;;
 esac
 
+tsc_max_old_space_mb="${OPENCLAW_NIX_TSC_MAX_OLD_SPACE_MB:-4096}"
+tsc_node_options="${NODE_OPTIONS:-}"
+case "$tsc_node_options" in
+  *--max-old-space-size*) ;;
+  *) tsc_node_options="${tsc_node_options:+$tsc_node_options }--max-old-space-size=$tsc_max_old_space_mb" ;;
+esac
+
 tsdown_cli="node_modules/tsdown/dist/run.mjs"
 if [ ! -f "$tsdown_cli" ]; then
   tsdown_cli="$(find node_modules -path '*/tsdown/dist/run.mjs' -type f | head -n 1)"
@@ -162,7 +169,7 @@ log_step "build: runtime-postbuild" node scripts/runtime-postbuild.mjs
 if [ -f "scripts/stage-bundled-plugin-runtime.mjs" ]; then
   log_step "build: stage bundled plugin runtime" node scripts/stage-bundled-plugin-runtime.mjs
 fi
-log_step "build: plugin-sdk dts" node "$tsc_cli" -p tsconfig.plugin-sdk.dts.json
+log_step "build: plugin-sdk dts" env NODE_OPTIONS="$tsc_node_options" node "$tsc_cli" -p tsconfig.plugin-sdk.dts.json
 log_step "build: write-plugin-sdk-entry-dts" node --import tsx scripts/write-plugin-sdk-entry-dts.ts
 if [ -f "scripts/copy-plugin-sdk-root-alias.mjs" ]; then
   log_step "build: copy-plugin-sdk-root-alias" node scripts/copy-plugin-sdk-root-alias.mjs

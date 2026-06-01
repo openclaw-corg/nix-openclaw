@@ -102,12 +102,19 @@ case "$tsdown_node_options" in
   *) tsdown_node_options="${tsdown_node_options:+$tsdown_node_options }--max-old-space-size=$tsdown_max_old_space_mb" ;;
 esac
 
+tsc_max_old_space_mb="${OPENCLAW_NIX_TSC_MAX_OLD_SPACE_MB:-4096}"
+tsc_node_options="${NODE_OPTIONS:-}"
+case "$tsc_node_options" in
+  *--max-old-space-size*) ;;
+  *) tsc_node_options="${tsc_node_options:+$tsc_node_options }--max-old-space-size=$tsc_max_old_space_mb" ;;
+esac
+
 log_step "node $tsdown_cli" env \
   NODE_OPTIONS="$tsdown_node_options" \
   OPENCLAW_RUN_NODE_SKIP_DTS_BUILD=1 \
   node "$tsdown_cli" --config-loader unrun --logLevel warn
 log_step "node scripts/build-stamp.mjs" node scripts/build-stamp.mjs
-log_step "node $tsc_cli" node "$tsc_cli" -p tsconfig.plugin-sdk.dts.json
+log_step "node $tsc_cli" env NODE_OPTIONS="$tsc_node_options" node "$tsc_cli" -p tsconfig.plugin-sdk.dts.json
 log_step "node --import tsx scripts/write-plugin-sdk-entry-dts.ts" node --import tsx scripts/write-plugin-sdk-entry-dts.ts
 if [ -f "scripts/copy-plugin-sdk-root-alias.mjs" ]; then
   log_step "node scripts/copy-plugin-sdk-root-alias.mjs" node scripts/copy-plugin-sdk-root-alias.mjs
