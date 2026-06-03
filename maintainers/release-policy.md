@@ -24,3 +24,31 @@ The package is fresh only when both are true:
 - `nix/packages/openclaw-app.nix` matches the newest stable public `OpenClaw-*.zip` app artifact.
 
 If newer stable source releases lack public app assets, report that as an upstream app publishing miss and keep the app pin on the newest public zip.
+
+## Mirrored Release Tags
+
+A `v<OpenClaw version>` tag in `nix-openclaw` is a user-facing install target
+for the complete Nix package state of that upstream OpenClaw version. It points
+at a `nix-openclaw` commit, not at the upstream `openclaw/openclaw` commit.
+
+Create a mirrored release tag only when all of these are true:
+
+- `nix/sources/openclaw-source.nix` pins `releaseTag = "v<version>"`.
+- `nix/packages/openclaw-app.nix` pins `version = "<version>"`.
+- The app URL points at the matching upstream `OpenClaw-<version>.zip` asset.
+- The generated config, runtime plugin locks, Nix patches, and package files for
+  that package state are committed.
+- Repository `CI` has passed on `main` for that exact commit, covering the Linux
+  and macOS package contract.
+
+Do not create a mirrored `v<OpenClaw version>` tag while source and app pins
+diverge, while release generation is incomplete, or while CI is failing. App lag
+can still be reported as upstream release-contract lag, but it is not a tagged
+user-facing release.
+
+Automation may create missing mirrored tags and lightweight GitHub Releases after
+green `CI` on `main`. Automation must not move an existing public tag. If a tag
+is wrong, a maintainer decides whether it is still safe to delete/retag
+immediately or whether to publish a corrective follow-up tag instead. If an
+upstream asset disappears or a hash invalidates after a tag is published, repair
+the package state first; do not move the public tag automatically.

@@ -782,6 +782,24 @@ Pins live in:
 5) The stable pin workflow validates that source/app pin set on the same Linux + macOS contract as repository `CI`.
 6) Only after both validations pass does the workflow push one release-mirroring commit to `main`.
 
+### Mirrored tags
+
+When a complete package state is proven on `main`, `nix-openclaw` publishes a
+matching `v<OpenClaw version>` tag and lightweight GitHub Release. The tag points
+at the validated `nix-openclaw` commit, so users can install the same upstream
+OpenClaw version through Nix:
+
+```bash
+nix run github:openclaw/nix-openclaw/v2026.5.28#openclaw
+```
+
+Mirrored tags are only created when the source pin and macOS app pin both match
+the same upstream stable OpenClaw version and repository `CI` is green on Linux
+and macOS for that exact commit. If a source release is packageable but the
+matching public macOS app zip is missing, `main` may still carry the packaging
+work, but no mirrored `v<OpenClaw version>` tag is published until the full
+user-facing package state is complete.
+
 ---
 
 ## Reference
