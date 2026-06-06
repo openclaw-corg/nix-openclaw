@@ -9,6 +9,10 @@ function requiredEnv(name) {
   return value;
 }
 
+function optionalEnv(name) {
+  return process.env[name] ?? "";
+}
+
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
@@ -75,8 +79,6 @@ if (dependencyMode !== "shrinkwrap") {
   process.exit(0);
 }
 
-const expectedPackageName = requiredEnv("OPENCLAW_RUNTIME_PLUGIN_PACKAGE_NAME");
-const expectedVersion = requiredEnv("OPENCLAW_RUNTIME_PLUGIN_VERSION");
 const packageJsonPath = path.resolve("package.json");
 const shrinkwrapPath = path.resolve("npm-shrinkwrap.json");
 
@@ -90,6 +92,8 @@ if (!fs.existsSync(shrinkwrapPath)) {
 const packageJson = readJson(packageJsonPath);
 const shrinkwrap = readJson(shrinkwrapPath);
 const rootLock = shrinkwrap.packages?.[""];
+const expectedPackageName = optionalEnv("OPENCLAW_RUNTIME_PLUGIN_PACKAGE_NAME") || packageJson.name;
+const expectedVersion = optionalEnv("OPENCLAW_RUNTIME_PLUGIN_VERSION") || packageJson.version;
 
 if (packageJson.name !== expectedPackageName) {
   fail(`package name mismatch: expected ${expectedPackageName}, got ${packageJson.name}`);

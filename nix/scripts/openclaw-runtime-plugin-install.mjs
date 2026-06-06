@@ -142,15 +142,14 @@ function findInvalidSymlink(root, allowedExternalTarget) {
 
 const out = requiredEnv("out");
 const expectedId = requiredEnv("OPENCLAW_RUNTIME_PLUGIN_ID");
-const expectedPackageName = requiredEnv("OPENCLAW_RUNTIME_PLUGIN_PACKAGE_NAME");
-const expectedVersion = requiredEnv("OPENCLAW_RUNTIME_PLUGIN_VERSION");
+const expectedPackageName = optionalEnv("OPENCLAW_RUNTIME_PLUGIN_PACKAGE_NAME");
+const expectedVersion = optionalEnv("OPENCLAW_RUNTIME_PLUGIN_VERSION");
 const expectedCompat = optionalEnv("OPENCLAW_RUNTIME_PLUGIN_COMPAT");
 const expectedPeer = optionalEnv("OPENCLAW_RUNTIME_PLUGIN_PEER_OPENCLAW");
 const runtimeEntriesFile = requiredEnv("OPENCLAW_RUNTIME_PLUGIN_RUNTIME_ENTRIES_FILE");
 const bundledPackageRootsFile = requiredEnv("OPENCLAW_RUNTIME_PLUGIN_BUNDLED_PACKAGE_ROOTS_FILE");
-const hasRuntimeDependencies = requiredEnv("OPENCLAW_RUNTIME_PLUGIN_HAS_RUNTIME_DEPENDENCIES") === "1";
-const dependencyMode =
-  process.env.OPENCLAW_RUNTIME_PLUGIN_DEPENDENCY_MODE ?? (hasRuntimeDependencies ? "bundled" : "none");
+const expectedHasRuntimeDependencies = optionalEnv("OPENCLAW_RUNTIME_PLUGIN_HAS_RUNTIME_DEPENDENCIES");
+let dependencyMode = process.env.OPENCLAW_RUNTIME_PLUGIN_DEPENDENCY_MODE ?? "";
 const openclawPackage = requiredEnv("OPENCLAW_GATEWAY_PACKAGE");
 let allowedExternalSymlinkTarget = null;
 
@@ -171,28 +170,47 @@ if (!fs.existsSync(manifestPath)) {
 
 const packageJson = readJson(packageJsonPath);
 const manifest = readJson(manifestPath);
+const packageName = packageJson.name;
+const packageVersion = packageJson.version;
+const dependencies = packageJson.dependencies ?? {};
+const optionalDependencies = packageJson.optionalDependencies ?? {};
+const hasRuntimeDependencies =
+  expectedHasRuntimeDependencies
+    ? expectedHasRuntimeDependencies === "1"
+    : Object.keys(dependencies).length > 0 || Object.keys(optionalDependencies).length > 0;
 
-if (packageJson.name !== expectedPackageName) {
-  fail(`package name mismatch: expected ${expectedPackageName}, got ${packageJson.name}`);
+if (expectedPackageName && packageName !== expectedPackageName) {
+  fail(`package name mismatch: expected ${expectedPackageName}, got ${packageName}`);
 }
-if (packageJson.version !== expectedVersion) {
-  fail(`package version mismatch: expected ${expectedVersion}, got ${packageJson.version}`);
+if (expectedVersion && packageVersion !== expectedVersion) {
+  fail(`package version mismatch: expected ${expectedVersion}, got ${packageVersion}`);
 }
 if (manifest.id !== expectedId) {
   fail(`plugin id mismatch: expected ${expectedId}, got ${manifest.id}`);
 }
-if ((packageJson.openclaw?.compat?.pluginApi ?? "") !== expectedCompat) {
-  fail(`OpenClaw plugin API compatibility mismatch for ${expectedId}`);
+if (expectedCompat && (packageJson.openclaw?.compat?.pluginApi ?? "") !== expectedCompat) {
+  fail(
+    `OpenClaw plugin API compatibility mismatch for ${expectedId}: expected ${expectedCompat}, got ${packageJson.openclaw?.compat?.pluginApi ?? "missing"}`,
+  );
 }
-if ((packageJson.peerDependencies?.openclaw ?? "") !== expectedPeer) {
-  fail(`OpenClaw peer dependency mismatch for ${expectedId}`);
+if (expectedPeer && (packageJson.peerDependencies?.openclaw ?? "") !== expectedPeer) {
+  fail(
+    `OpenClaw peer dependency mismatch for ${expectedId}: expected ${expectedPeer}, got ${packageJson.peerDependencies?.openclaw ?? "missing"}`,
+  );
 }
+const openclawPeer = expectedPeer || packageJson.peerDependencies?.openclaw || "";
 
-const runtimeEntries = fs
+let runtimeEntries = fs
   .readFileSync(runtimeEntriesFile, "utf8")
   .split(/\r?\n/)
   .map((line) => line.trim())
   .filter(Boolean);
+if (runtimeEntries.length === 0) {
+  runtimeEntries = [
+    ...(Array.isArray(packageJson.openclaw?.runtimeExtensions) ? packageJson.openclaw.runtimeExtensions : []),
+    packageJson.openclaw?.runtimeSetupEntry,
+  ].filter((entry) => typeof entry === "string" && entry.trim());
+}
 if (runtimeEntries.length === 0) {
   fail(`runtime plugin ${expectedId} has no runtime entry`);
 }
@@ -212,17 +230,43 @@ const expectedPackageRoots = new Set(
     .filter((line) => line && line !== ""),
 );
 const actualPackageRoots = new Set(collectPackageRoots(path.join(out, "node_modules")));
+if (!dependencyMode) {
+  dependencyMode = hasRuntimeDependencies ? "auto" : "none";
+}
 
 if (hasRuntimeDependencies) {
+  if (dependencyMode === "auto") {
+    const missingDependencyRoots = [
+      ...Object.keys(dependencies),
+      ...Object.keys(optionalDependencies),
+    ]
+      .sort()
+      .map((dependencyName) => packageRootForName(dependencyName))
+      .filter((dependencyRoot) => !actualPackageRoots.has(dependencyRoot));
+    if (missingDependencyRoots.length === 0) {
+      dependencyMode = "bundled";
+    } else if (fs.existsSync(path.join(out, "npm-shrinkwrap.json"))) {
+      fail(
+        `runtime plugin ${expectedId} has npm-shrinkwrap.json and runtime dependencies; set npmDepsHash = lib.fakeHash, rebuild, and replace it with the suggested hash`,
+      );
+    } else {
+      fail(
+        `runtime plugin ${expectedId} has runtime dependencies but does not bundle node_modules; publish npm-shrinkwrap.json and set npmDepsHash = lib.fakeHash`,
+      );
+    }
+  }
+
   if (dependencyMode === "bundled") {
     for (const expectedRoot of expectedPackageRoots) {
       if (!actualPackageRoots.has(expectedRoot)) {
         fail(`runtime plugin ${expectedId} is missing bundled dependency root ${expectedRoot}`);
       }
     }
-    for (const actualRoot of actualPackageRoots) {
-      if (!expectedPackageRoots.has(actualRoot)) {
-        fail(`runtime plugin ${expectedId} has unexpected bundled dependency root ${actualRoot}`);
+    if (expectedPackageRoots.size > 0) {
+      for (const actualRoot of actualPackageRoots) {
+        if (!expectedPackageRoots.has(actualRoot)) {
+          fail(`runtime plugin ${expectedId} has unexpected bundled dependency root ${actualRoot}`);
+        }
       }
     }
   } else if (dependencyMode === "shrinkwrap") {
@@ -241,6 +285,9 @@ if (hasRuntimeDependencies) {
     fail(`runtime plugin ${expectedId} has invalid dependency mode ${dependencyMode}`);
   }
 } else {
+  if (dependencyMode === "auto") {
+    dependencyMode = "none";
+  }
   if (dependencyMode !== "none") {
     fail(`runtime plugin ${expectedId} declares no runtime dependencies but has dependency mode ${dependencyMode}`);
   }
@@ -249,7 +296,7 @@ if (hasRuntimeDependencies) {
   }
 }
 
-if (expectedPeer) {
+if (openclawPeer) {
   const peerTarget = path.join(openclawPackage, "lib/openclaw");
   if (!fs.existsSync(path.join(peerTarget, "package.json"))) {
     fail(`OpenClaw peer target missing package.json: ${peerTarget}`);

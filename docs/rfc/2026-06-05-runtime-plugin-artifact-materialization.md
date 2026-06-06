@@ -10,7 +10,7 @@ written_by: ai
 
 ## Decision
 
-Extend the existing OpenClaw catalog runtime plugin pipeline so one immutable
+Extend the existing OpenClaw official inventory runtime plugin pipeline so one immutable
 Nix builder can materialize every packageable runtime plugin artifact shape:
 
 1. plugin roots with no runtime dependencies;
@@ -18,7 +18,7 @@ Nix builder can materialize every packageable runtime plugin artifact shape:
 3. plugin roots with runtime dependencies locked by a materializer-valid
    `npm-shrinkwrap.json`.
 
-For OpenClaw catalog plugins, the user-facing API remains:
+For OpenClaw official inventory plugins, the user-facing API remains:
 
 ```nix
 programs.openclaw.runtimePlugins = [
@@ -27,9 +27,10 @@ programs.openclaw.runtimePlugins = [
 ];
 ```
 
-`runtimePlugins` selects OpenClaw plugin ids. It does not expose npm, ClawHub,
-archive, or dependency-mode choices. Source-specific resolution is maintainer
-machinery behind generated locks.
+`runtimePlugins` selects generated OpenClaw plugin ids. It does not expose npm,
+ClawHub, archive, or dependency-mode choices. Source-specific resolution for
+OpenClaw official inventory rows is maintainer machinery behind generated
+locks.
 
 Concrete cases:
 
@@ -40,22 +41,22 @@ Concrete cases:
 | `openclaw plugins install @openclaw/slack` | `programs.openclaw.runtimePlugins = [ "slack" ];` | Fixed npm package root with bundled `node_modules`. |
 | `openclaw plugins install npm:@openclaw/memory-lancedb` | `programs.openclaw.runtimePlugins = [ "memory-lancedb" ];` | Fixed npm package root with `npm-shrinkwrap.json` and generated `npmDepsHash`. |
 | `openclaw plugins install clawhub:@openclaw/whatsapp` | `programs.openclaw.runtimePlugins = [ "whatsapp" ];` | ClawHub resolves to a fixed npm-pack tarball, then uses the same shrinkwrap path. |
+| `openclaw plugins install npm:@scope/plugin@1.2.3` | `programs.openclaw.runtimePluginSources = [{ id = "..."; spec = "npm:@scope/plugin@1.2.3"; hash = lib.fakeHash; }];` | Fixed-output npm resolver fetches the exact tarball, then the same builder validates the plugin root. |
+| `openclaw plugins install clawhub:@scope/plugin@1.2.3` | `programs.openclaw.runtimePluginSources = [{ id = "..."; spec = "clawhub:@scope/plugin@1.2.3"; hash = lib.fakeHash; }];` | Fixed-output ClawHub resolver fetches the exact npm-pack artifact, then the same builder validates the plugin root. |
 | `openclaw plugins install @tencent-weixin/openclaw-weixin` | No `runtimePlugins` id in the current generated lock. | Upstream must publish shrinkwrap or bundled runtime dependencies before this contract can package it. |
 
-For a later arbitrary-source API, require locked source definitions rather than
-mutable install specs. A source spec such as `npm:@scope/plugin@1.2.3` or
-`clawhub:@openclaw/whatsapp@2026.6.1` must be resolved by a maintainer/user
-lock generation step into real artifact URL, hash, package identity, and
-dependency materialization evidence before Nix can build it. Nix evaluation,
-Home Manager activation, and runtime never resolve latest versions or call
-package registries.
+For arbitrary npm and ClawHub sources, require locked source definitions rather
+than mutable install specs. A source spec such as `npm:@scope/plugin@1.2.3` or
+`clawhub:@openclaw/whatsapp@2026.6.1` is allowed only with exact versions and
+Nix fixed-output hashes. Home Manager activation and OpenClaw runtime never
+resolve latest versions or call package registries.
 
 ## Why This Exists
 
 RFC 1 established the user model: select supported OpenClaw runtime plugin ids
 and let nix-openclaw render immutable plugin roots into `plugins.load.paths`.
 
-The first implementation supports catalog rows whose npm package tarballs are
+The first implementation supports official inventory rows whose npm package tarballs are
 already complete:
 
 - dependency-free package roots;
@@ -77,7 +78,7 @@ The gap is not a new user-facing plugin type. It is a missing artifact
 materialization path for package roots that can be installed from shrinkwrap
 instead of being pre-bundled.
 
-This RFC is about external catalog/package artifacts. Bundled OpenClaw runtime
+This RFC is about external inventory/package artifacts. Bundled OpenClaw runtime
 plugins that already ship inside the packaged gateway, including bundled Codex
 or ACPX entries when present in the pinned OpenClaw release, remain a separate
 upstream runtime source. In OpenClaw 2026.6.1 the external Codex and ACPX npm
@@ -184,11 +185,11 @@ when npm tries to read an uncached registry package during materialization.
 
 ## ClawHub Resolution
 
-For OpenClaw catalog rows whose selected source is ClawHub, the lock generator
+For OpenClaw official inventory rows whose selected source is ClawHub, the lock generator
 should resolve the ClawHub spec at maintainer update time:
 
 ```text
-catalog id
+official inventory id
   -> clawhub:<package>@<exact version>
   -> ClawHub artifact metadata
   -> npm-pack tarball URL + hash + npm integrity
@@ -208,35 +209,33 @@ package root or a separate deterministic lock format.
 
 ## User-Supplied Sources
 
-Arbitrary user-supplied sources are still not RFC 2 implementation scope. This
-RFC only defines the packageability rule and the generated-lock shape needed to
-make a future source API sane.
-
-When that API exists, it should look like a Nix package definition, not a
-mutable install command. The user or maintainer supplies a locked source record,
-or runs a lock updater that writes one. Illustrative shape only:
+Arbitrary user-supplied npm and ClawHub sources use a Nix package definition,
+not a mutable install command. The user or maintainer supplies a locked source
+record:
 
 ```nix
 programs.openclaw.runtimePluginSources = [
   {
+    id = "my-plugin";
     spec = "npm:@scope/plugin@1.2.3";
-    hash = "sha256-...";
+    hash = lib.fakeHash;
     # Present only if the selected dependency materializer needs it.
-    npmDepsHash = "sha256-...";
+    npmDepsHash = lib.fakeHash;
   }
 ];
 ```
 
-This is a future surface. The first shipping path should keep
-`runtimePlugins = [ "id" ]` for pinned OpenClaw catalog ids and make more ids
-supported.
+The initial `lib.fakeHash` values follow normal Nix convention: build once,
+paste the suggested artifact hash, add `npmDepsHash = lib.fakeHash` only when
+the package has shrinkwrapped runtime dependencies, then build again and paste
+the suggested dependency hash.
 
 ## Validation Gates
 
 Before shipping RFC 2:
 
 1. The lock generator supports at least one shrinkwrapped npm artifact from the
-   pinned OpenClaw catalog.
+   pinned OpenClaw official inventory.
 2. Running the generator twice is stable.
 3. Generated locks record artifact hash, package identity, manifest id,
    compatibility, runtime entries, dependency mode, and `npmDepsHash` when
@@ -247,7 +246,7 @@ Before shipping RFC 2:
 6. ClawHub-selected rows resolve through the ClawHub artifact endpoint at lock
    update time and are either promoted through the shared builder or skipped
    with a precise offline-materialization diagnostic.
-7. At least one shrinkwrapped npm-only catalog id, such as `memory-lancedb`, is
+7. At least one shrinkwrapped npm-only official inventory id, such as `memory-lancedb`, is
    supported if its dependencies build on the target platforms.
 8. Unsupported rows remain explicit in the generated maintainer report.
 9. Existing no-dep and bundled-dependency plugin roots still build and load.
@@ -281,7 +280,7 @@ OpenClaw source evidence:
 - `src/plugins/clawhub.ts`: ClawHub package install downloads npm-pack
   artifacts and verifies SHA-256 and npm integrity before using the normal
   archive install path.
-- Local RFC 2 implementation: OpenClaw 2026.6.1 generated 34 supported catalog
+- Local RFC 2 implementation: OpenClaw 2026.6.1 generated 34 supported official inventory
   rows. Seven are shrinkwrapped roots: `acpx`, `codex`, `copilot`, `matrix`,
   `memory-lancedb`, `tlon`, and `whatsapp`.
 - Local RFC 2 implementation: ClawHub WhatsApp and Matrix resolve to npm-pack
@@ -289,7 +288,7 @@ OpenClaw source evidence:
   `npmDepsHash`; both are emitted as supported runtime plugin locks.
 - Local RFC 2 implementation: the current skipped diagnostics are
   unshrinkwrapped runtime dependencies in Weixin, Yuanbao, and WeCom, plus a
-  duplicate PixVerse catalog row.
+  duplicate PixVerse inventory row.
 - Local artifact check: the Weixin, Yuanbao, and WeCom npm tarballs declare
   runtime dependencies but contain no `npm-shrinkwrap.json`, package lock, or
   bundled `node_modules`. Supporting them under this RFC requires upstream to
