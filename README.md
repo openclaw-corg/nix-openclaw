@@ -75,81 +75,135 @@ You talk to Telegram, your machine does things.
 
 ## OpenClaw Runtime Plugins
 
-OpenClaw runtime plugins are the same plugins described in the upstream
-[OpenClaw plugin docs](https://docs.openclaw.ai/tools/plugin). They add
-Gateway features such as Discord, Slack, WhatsApp, Google Chat, Microsoft
-Teams, GitHub Copilot, model providers, memory, tools, and other runtime
-capabilities.
+OpenClaw runtime plugins are JavaScript plugin roots loaded by the OpenClaw
+Gateway. They are the plugins described in the upstream
+[OpenClaw plugin docs](https://docs.openclaw.ai/tools/plugin): Discord, Slack,
+WhatsApp, GitHub Copilot, memory providers, model providers, tools, and similar
+Gateway features.
 
-With regular OpenClaw, installing Discord looks like this:
+With regular OpenClaw, plugin code is installed by the OpenClaw CLI:
 
 ```bash
 openclaw plugins install @openclaw/discord
-openclaw gateway restart
-openclaw plugins inspect discord --runtime --json
+openclaw plugins install clawhub:<package>
+openclaw plugins install npm:<package>
+openclaw plugins install npm-pack:<path.tgz>
+openclaw plugins install git:github.com/<owner>/<repo>@<ref>
+openclaw plugins install --link ./my-plugin
+openclaw plugins install <plugin> --marketplace <source>
 ```
 
-With nix-openclaw, plugin code is installed by Nix instead:
+With nix-openclaw, plugin code is installed by Nix:
 
 ```nix
 programs.openclaw.runtimePlugins = [ "discord" ];
 ```
 
-OpenClaw runs in Nix mode, so `openclaw plugins install`,
-`openclaw plugins update`, `openclaw plugins enable`, and
-`openclaw plugins disable` fail instead of mutating files in
-`~/.openclaw`. Change your Nix config and rebuild.
+OpenClaw runs with `OPENCLAW_NIX_MODE=1`, so `openclaw plugins install`,
+`openclaw plugins update`, `openclaw plugins uninstall`,
+`openclaw plugins enable`, and `openclaw plugins disable` fail instead of
+mutating `~/.openclaw`. Change your Nix config and rebuild.
 
-### Find a Plugin
+### Schemes
+
+Use these inputs:
+
+| Regular OpenClaw command or source | nix-openclaw |
+| --- | --- |
+| Already included in OpenClaw | Configure it directly under `programs.openclaw.config`; no install input is needed. |
+| `openclaw plugins install @openclaw/discord` | `programs.openclaw.runtimePlugins = [ "discord" ];` |
+| `openclaw plugins install npm:@openclaw/copilot@2026.6.1` | `programs.openclaw.runtimePluginSources = [{ id = "copilot"; spec = "npm:@openclaw/copilot@2026.6.1"; }];` |
+| `openclaw plugins install clawhub:@openclaw/whatsapp@2026.6.1` | `programs.openclaw.runtimePluginSources = [{ id = "whatsapp"; spec = "clawhub:@openclaw/whatsapp@2026.6.1"; }];` |
+| Fixed HTTPS npm-pack `.tgz` artifact | `programs.openclaw.runtimePluginSources = [{ id = "my-plugin"; url = "https://.../plugin-1.2.3.tgz"; }];` |
+| `git:`, local path, or marketplace install | Not a direct `runtimePluginSources` input today. Package the plugin as a fixed Nix source or use raw `plugins.load.paths`, below. |
+
+The `id` is the OpenClaw plugin id from `openclaw.plugin.json`. It must match
+the package you fetch.
 
 Start with the upstream
-[Plugin inventory](https://docs.openclaw.ai/plugins/plugin-inventory). It tells
-you which plugins are already included in OpenClaw, which official external
-packages can be installed from npm or ClawHub, and which plugins are source
-checkout only.
-
-nix-openclaw follows the same pinned OpenClaw release and publishes a generated
-list of plugin ids that this Nix build can package. If an id appears there, use
-`programs.openclaw.runtimePlugins = [ "<id>" ];`.
-
-Check what this nix-openclaw build generated:
+[Plugin inventory](https://docs.openclaw.ai/plugins/plugin-inventory). For
+official plugin ids, check this build's supported list:
 
 ```bash
 jq -r '.supported[] | "\(.id)\t\(.label)\t\(.selectedSource)\t\(.dependencyMode)"' \
   nix/generated/openclaw-runtime-plugins/report.json
 ```
 
-`runtimePlugins` uses OpenClaw plugin ids such as `discord`, `whatsapp`,
-`googlechat`, `msteams`, or `copilot`. It does not use npm package names such
-as `@openclaw/discord`.
+`runtimePlugins` uses plugin ids such as `discord`, `whatsapp`, `googlechat`,
+`msteams`, or `copilot`, not npm package names such as `@openclaw/discord`.
+Do not put bare package names or unprefixed `@scope/package` strings in
+`runtimePluginSources`; use exact `npm:` or `clawhub:` specs.
 
-nix-openclaw generates that supported list from the pinned OpenClaw source
-release. If a plugin is in the upstream inventory but not in this generated
-list, Home Manager fails before switching and prints the supported ids for the
-build.
+### Dependency Rule
 
-### Install Sources
+The rule is simple: if a plugin has runtime npm dependencies, it must publish
+either bundled `node_modules` or `npm-shrinkwrap.json`. No bundled deps and no
+shrinkwrap means no Nix package.
 
-Regular OpenClaw supports several install sources. nix-openclaw supports the
-same plugin roots only when the selected package can be built reproducibly.
+Regular OpenClaw can solve npm dependencies during `openclaw plugins install`.
+nix-openclaw cannot do a mutable dependency solve during `home-manager switch`.
+If a package has `npm-shrinkwrap.json`, nix-openclaw can replay that dependency
+graph with `npmDepsHash`. If it bundles `node_modules`, nix-openclaw validates
+and copies the bundled deps. If it has neither, ask the plugin author to publish
+shrinkwrap or bundled runtime deps.
 
-| Regular OpenClaw | What it means | nix-openclaw |
-| --- | --- | --- |
-| Included in OpenClaw | The plugin already ships inside the OpenClaw package. | Configure it directly, for example `programs.openclaw.config.plugins.entries.workboard.enabled = true;`; no `runtimePlugins` entry is needed. |
-| `openclaw plugins install @openclaw/discord` | OpenClaw chooses the official package source for Discord. | `runtimePlugins = [ "discord" ];` when `discord` is in the supported list. |
-| `openclaw plugins install npm:@openclaw/copilot` | Install an npm package into OpenClaw's managed plugin root. Unpinned specs can resolve a compatible version at install time. | `runtimePlugins = [ "copilot" ];` for generated official ids, or `runtimePluginSources` with an exact version for an arbitrary npm package. |
-| `openclaw plugins install clawhub:@openclaw/whatsapp` | Resolve a ClawHub package to a downloadable plugin artifact. | `runtimePlugins = [ "whatsapp" ];` for generated official ids, or `runtimePluginSources` for an arbitrary ClawHub package. |
-| `openclaw plugins install git:github.com/owner/repo@ref` | Clone source and install it on this machine. | Not a direct `runtimePlugins` input today. It needs a fixed Nix source hash and the same package checks. |
-| `openclaw plugins install --link ./my-plugin` | Link a local development checkout. | Not reproducible. Use OpenClaw dev mode for local plugin development. |
-| `openclaw plugins install plugin --marketplace owner/repo` | Install a compatible bundle from a marketplace source. | Not a runtime plugin source today. nix-openclaw tool/skill bundles use `customPlugins`, below. |
+### npm and ClawHub Sources
 
-### Example: Discord Channel
+Use `runtimePluginSources` when the plugin is not in the supported
+`runtimePlugins` list, or when you want to pin a specific npm or ClawHub package
+yourself. If the id is already in the supported list, prefer `runtimePlugins`
+unless you intentionally want to override the selected source.
+
+```nix
+programs.openclaw.runtimePluginSources = [
+  {
+    id = "copilot";
+    spec = "npm:@openclaw/copilot@2026.6.1";
+  }
+  {
+    id = "whatsapp";
+    spec = "clawhub:@openclaw/whatsapp@2026.6.1";
+  }
+];
+```
+
+Build once. Nix will fail with the real source hash. Paste it back:
+
+```nix
+programs.openclaw.runtimePluginSources = [
+  {
+    id = "copilot";
+    spec = "npm:@openclaw/copilot@2026.6.1";
+    hash = "sha256-...";
+  }
+];
+```
+
+If the package has runtime dependencies, does not bundle them, and publishes
+`npm-shrinkwrap.json`, the next build asks for `npmDepsHash`:
+
+```nix
+programs.openclaw.runtimePluginSources = [
+  {
+    id = "copilot";
+    spec = "npm:@openclaw/copilot@2026.6.1";
+    hash = "sha256-...";
+    npmDepsHash = lib.fakeHash;
+  }
+];
+```
+
+Build again and replace `npmDepsHash` with the suggested hash. Specs must use
+exact `N.N` or `N.N.N` versions, with an optional prerelease suffix. Do not use
+`latest`, dist-tags, version ranges, or build metadata in Nix config. Local
+`npm-pack:<path.tgz>` tarballs are not direct `runtimePluginSources` inputs;
+publish or fetch a fixed HTTPS `.tgz`, then use `url`, or wire a prebuilt
+plugin root yourself with `plugins.load.paths`.
+
+### Configuration Example
 
 Channel plugins add places where messages can enter and leave OpenClaw. That
-means there are two parts:
-
-1. load the channel plugin;
-2. configure the channel account.
+means there are two parts: load the plugin, then configure the channel account.
 
 Upstream OpenClaw:
 
@@ -192,158 +246,33 @@ programs.openclaw = {
 ```
 
 Use the same pattern for Slack, WhatsApp, Google Chat, Microsoft Teams, and
-other channel plugins: add the plugin id to `runtimePlugins`, then translate the
-upstream `channels.<name>` config into `programs.openclaw.config.channels.<name>`.
+other channel plugins. Non-channel plugins still use the same install inputs,
+but their settings go wherever the upstream plugin docs say. For example, a
+model/runtime plugin usually configures `agents.*`, `models.*`, or
+`plugins.entries.<id>.config` instead of `channels.*`.
 
-### Example: GitHub Copilot
+### Lower-Level Paths
 
-GitHub Copilot is not a channel. It does not add a new chat surface like Slack
-or WhatsApp. It changes how an agent turn runs: OpenClaw selects a
-`github-copilot/...` model and routes that agent turn through the Copilot
-runtime.
+These paths are still supported, but most users should start above:
 
-Upstream OpenClaw:
+| Path | Use when |
+| --- | --- |
+| `programs.openclaw.config.plugins.entries.<id>` | The plugin already ships inside OpenClaw and only needs upstream config or enablement. |
+| `programs.openclaw.config.plugins.load.paths` | You already have a fixed plugin root and want to wire it yourself. Do not mix this with `runtimePlugins` or `runtimePluginSources` in the same instance. |
+| `programs.openclaw.bundledPlugins` / `programs.openclaw.customPlugins` | You are installing nix-openclaw tool plugins: Nix flake bundles that add CLI tools or agent skills. See [Plugins](#plugins). |
 
-```bash
-openclaw plugins install @openclaw/copilot
-```
+Raw `plugins.load.paths` is an OpenClaw config escape hatch. nix-openclaw will
+render it, but it will not fetch npm dependencies, resolve ClawHub, validate
+hashes, or write plugin install records for you.
 
-Then configure an agent model to use that runtime:
-
-```json5
-{
-  agents: {
-    defaults: {
-      model: "github-copilot/gpt-5.5",
-      models: {
-        "github-copilot/gpt-5.5": {
-          agentRuntime: { id: "copilot" },
-        },
-      },
-    },
-  },
-}
-```
-
-See OpenClaw's
-[Copilot plugin docs](https://docs.openclaw.ai/plugins/copilot) for the full
-runtime setup.
-
-nix-openclaw:
+Example:
 
 ```nix
-programs.openclaw = {
-  runtimePlugins = [ "copilot" ];
-
-  config.agents.defaults = {
-    model = "github-copilot/gpt-5.5";
-    models = {
-      "github-copilot/gpt-5.5" = {
-        agentRuntime.id = "copilot";
-      };
-    };
-  };
+programs.openclaw.config.plugins = {
+  load.paths = [ "/nix/store/...-my-plugin" ];
+  entries.my-plugin.enabled = true;
 };
 ```
-
-The difference is where the upstream settings go: channel plugins configure
-`channels.<name>`, while runtime/provider plugins such as GitHub Copilot
-configure agent runtime or model settings.
-
-### Arbitrary npm and ClawHub Plugins
-
-Use `runtimePluginSources` when the plugin is not in the generated
-`runtimePlugins` list, or when you intentionally want to pin a specific npm or
-ClawHub package yourself.
-
-For an npm package:
-
-```nix
-programs.openclaw.runtimePluginSources = [
-  {
-    id = "my-plugin";
-    spec = "npm:@scope/openclaw-plugin@1.2.3";
-    hash = lib.fakeHash;
-  }
-];
-```
-
-For a ClawHub package:
-
-```nix
-programs.openclaw.runtimePluginSources = [
-  {
-    id = "my-plugin";
-    spec = "clawhub:@scope/openclaw-plugin@1.2.3";
-    hash = lib.fakeHash;
-  }
-];
-```
-
-Build once, then replace `hash = lib.fakeHash;` with the hash Nix reports. If
-the plugin has runtime npm dependencies and ships `npm-shrinkwrap.json`, the
-build will ask for a second hash:
-
-The option defaults `hash` to `lib.fakeHash`; the examples keep it visible
-because that is the value you replace after the first build.
-
-```nix
-programs.openclaw.runtimePluginSources = [
-  {
-    id = "my-plugin";
-    spec = "npm:@scope/openclaw-plugin@1.2.3";
-    hash = "sha256-...";
-    npmDepsHash = lib.fakeHash;
-  }
-];
-```
-
-Build again and replace `npmDepsHash` with the suggested hash.
-
-The `id` is the OpenClaw plugin id from the package's
-`openclaw.plugin.json`, not necessarily the npm package name. The plugin's own
-setup docs define the config shape under `programs.openclaw.config`.
-
-Specs must use exact versions. Do not use `latest`, dist-tags, or version
-ranges in Nix config.
-
-### Why Some npm and ClawHub Plugins Still Fail
-
-Regular OpenClaw can resolve packages during `openclaw plugins install`. It can
-ask ClawHub or npm for metadata, choose a compatible version, install npm
-dependencies into a managed plugin root, write install records, and restart the
-Gateway.
-
-nix-openclaw has to do that before activation, with fixed Nix inputs. A plugin
-source is packageable when nix-openclaw has:
-
-1. the OpenClaw plugin id;
-2. an exact npm or ClawHub package version;
-3. the plugin artifact hash;
-4. a valid `openclaw.plugin.json` and built JavaScript runtime files;
-5. either no runtime npm dependencies, bundled `node_modules`, or a complete
-   `npm-shrinkwrap.json` that Nix can replay into an `npmDepsHash`.
-
-That is why all of these can be supported by the same Nix builder:
-
-| Plugin | Upstream source | Why Nix can build it |
-| --- | --- | --- |
-| Discord | npm or ClawHub | The selected npm package is fixed and bundles its runtime dependencies. |
-| WhatsApp | ClawHub | The pinned OpenClaw inventory selects a ClawHub npm-pack artifact with a SHA-256 hash, and the package has `npm-shrinkwrap.json`. |
-| GitHub Copilot | npm | The exact npm tarball is fixed and the package has `npm-shrinkwrap.json`, so nix-openclaw records `npmDepsHash`. |
-
-If a package declares runtime dependencies but ships neither bundled
-`node_modules` nor `npm-shrinkwrap.json`, nix-openclaw cannot replay the install
-offline. In the current generated report, the skipped Weixin, Yuanbao, and
-WeCom packages are in that class. They can become packageable if their
-published packages add shrinkwrap or bundle runtime dependencies.
-
-### Different: nix-openclaw Tool Plugins
-
-`bundledPlugins` and `customPlugins` are not OpenClaw runtime plugins. They are
-nix-openclaw tool/skill bundles such as `discrawl`, `summarize`, and `peekaboo`.
-Use them for Nix flake plugins that add CLI tools or agent skills, not for
-OpenClaw npm or ClawHub runtime plugins.
 
 ---
 
